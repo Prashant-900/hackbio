@@ -90,9 +90,9 @@ quorum_sensing:
 
 # --- Toxin / Bacteriocin ---
 toxin:
-  secretion_rate: 0.03
-  diffusion_rate: 0.1
-  decay_rate: 0.05
+  secretion_rate: 0.12             # 4x previous — colicins are potent locally
+  diffusion_rate: 0.04             # low diffusion — bacteriocins act within a few cell-lengths
+  decay_rate: 0.03                 # slower degradation → builds up in contested zones
   lethality: 0.15
   self_immunity: 1.0
 
