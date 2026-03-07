@@ -1,0 +1,7 @@
+Team Name: HackBio
+Track: Computational Biology / Agent-Based Modeling
+
+Members:
+  - Prashant Suthar
+
+Project: Bacterial Colony Dynamics — Agent-Based Model Simulation

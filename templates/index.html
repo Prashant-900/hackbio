@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Bacterial Colony ABM</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#1e1e1e;--surface:#252526;--card:#2d2d2d;--border:#3c3c3c;
+  --text:#cccccc;--muted:#858585;--dim:#4e4e4e;
+  --accent:#007acc;--green:#608b4e;--red:#d16969;--amber:#dcdcaa;--violet:#c586c0;
+  --radius:2px;
+}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);overflow:hidden;height:100vh}
+
+/* ─ Topbar ─ */
+.topbar{height:35px;background:#3c3c3c;border-bottom:1px solid #474747;display:flex;align-items:center;justify-content:space-between;padding:0 10px;z-index:50;position:relative}
+.topbar .logo{font-size:13px;font-weight:400;color:var(--muted)}
+.topbar .logo b{color:var(--text);font-weight:400}
+.topbar .actions{display:flex;gap:4px}
+.topbar .actions button{background:transparent;border:none;color:var(--muted);padding:4px 10px;border-radius:0;font-size:12px;cursor:pointer;transition:background .1s}
+.topbar .actions button:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.topbar .status{font-size:10px;padding:2px 8px;border-radius:2px;font-weight:400;text-transform:uppercase;letter-spacing:.5px}
+.s-idle{background:transparent;color:var(--muted)}
+.s-run{background:rgba(96,139,78,.25);color:#89d185}
+.s-pause{background:rgba(220,220,170,.15);color:var(--amber)}
+
+/* ─ World ─ */
+.world-wrap{position:relative;width:100%;height:calc(100vh - 35px - 36px);overflow:hidden;background:#1a1a1a}
+#world{display:block;cursor:grab}
+#world.dragging{cursor:grabbing}
+
+/* ─ Tooltip ─ */
+#tooltip{position:absolute;pointer-events:none;background:#252526;border:1px solid #454545;border-radius:0;padding:8px 12px;font-size:12px;line-height:1.6;color:var(--text);display:none;z-index:40;min-width:170px}
+#tooltip .tt-head{font-weight:600;margin-bottom:3px;font-size:12px}
+#tooltip .tt-row{display:flex;justify-content:space-between;gap:10px}
+#tooltip .tt-label{color:var(--muted)}
+#tooltip .tt-val{font-family:Consolas,'Courier New',monospace;font-size:11px}
+
+/* ─ Floating stats ─ */
+#statsPanel{position:absolute;top:8px;left:8px;background:#252526;border:1px solid #3c3c3c;border-radius:0;padding:0;z-index:30;min-width:190px;font-size:12px;overflow:hidden}
+#statsPanel.collapsed .sp-body{display:none}
+.sp-head{padding:6px 10px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;background:#2d2d2d}
+.sp-head:hover{color:var(--text)}
+.sp-body{padding:0 10px 8px}
+.sp-row{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #333}
+.sp-row:last-child{border:none}
+.sp-row .k{color:var(--muted);font-size:11px}
+.sp-row .v{font-family:Consolas,'Courier New',monospace;font-size:11px}
+
+/* ─ Layers panel ─ */
+#layersPanel{position:absolute;bottom:8px;right:8px;background:#252526;border:1px solid #3c3c3c;border-radius:0;padding:6px 10px;z-index:30;font-size:12px}
+#layersPanel label{display:flex;align-items:center;gap:5px;padding:2px 0;cursor:pointer;color:var(--muted)}
+#layersPanel label:hover{color:var(--text)}
+#layersPanel input{accent-color:var(--accent)}
+
+/* ─ Bottom bar ─ */
+.bottombar{height:36px;background:#007acc;border-top:none;display:flex;align-items:center;gap:12px;padding:0 10px;z-index:50}
+.bottombar .controls{display:flex;gap:2px}
+.bottombar .controls button{width:28px;height:28px;border:none;background:transparent;color:#fff;border-radius:0;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;transition:background .1s}
+.bottombar .controls button:hover{background:rgba(255,255,255,.15)}
+.bottombar .controls button:disabled{opacity:.35;cursor:default}
+.bottombar .controls button.active{background:rgba(255,255,255,.2)}
+.bottombar .sep{width:1px;height:20px;background:rgba(255,255,255,.2)}
+.bottombar .field{display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.8)}
+.bottombar .field input[type=range]{width:80px;accent-color:#fff;height:3px}
+.bottombar .field .val{font-family:Consolas,'Courier New',monospace;color:#fff;font-size:11px;min-width:36px}
+.bottombar .epoch{margin-left:auto;font-size:11px;color:rgba(255,255,255,.8);display:flex;align-items:center;gap:8px}
+.bottombar .epoch strong{color:#fff;font-size:13px}
+.progress{width:140px;height:3px;background:rgba(0,0,0,.3);border-radius:0;overflow:hidden}
+.progress .bar{height:100%;background:#fff;border-radius:0;transition:width .3s}
+
+/* ─ Modal ─ */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:none;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#252526;border:1px solid #454545;border-radius:0;max-width:900px;width:90%;max-height:85vh;overflow-y:auto;position:relative;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+.modal-head{padding:10px 16px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#3c3c3c;z-index:2}
+.modal-head h2{font-size:13px;font-weight:400}
+.modal-head .close{background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px;border-radius:0}
+.modal-head .close:hover{background:rgba(255,255,255,.1);color:var(--text)}
+.modal-body{padding:16px}
+
+/* Settings form */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-group{display:flex;flex-direction:column;gap:3px}
+.form-group label{font-size:11px;color:var(--muted)}
+.form-group input,.form-group select{padding:5px 8px;background:#3c3c3c;border:1px solid #555;border-radius:0;color:var(--text);font-size:13px}
+.form-group input:focus,.form-group select:focus{outline:1px solid var(--accent);border-color:var(--accent)}
+.form-footer{margin-top:16px;display:flex;justify-content:flex-end;gap:6px}
+.btn-primary{padding:6px 16px;background:#0e639c;color:#fff;border:none;border-radius:0;font-weight:400;font-size:13px;cursor:pointer}
+.btn-primary:hover{background:#1177bb}
+
+/* Charts grid */
+.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.chart-cell{background:#1e1e1e;border:1px solid #333;border-radius:0;padding:10px}
+.chart-cell .chart-title{font-size:11px;color:var(--muted);margin-bottom:6px}
+.chart-cell .plotly-chart{width:100%;height:240px}
+.chart-cell.full{grid-column:1/-1}
+
+/* Log */
+#logWrap{position:absolute;bottom:8px;left:8px;z-index:30}
+#logToggle{background:#252526;border:1px solid #3c3c3c;border-radius:0;padding:4px 10px;font-size:11px;color:var(--muted);cursor:pointer}
+#logToggle:hover{color:var(--text);background:#2d2d2d}
+#logBox{display:none;background:#1e1e1e;border:1px solid #3c3c3c;border-radius:0;padding:8px;max-height:140px;overflow-y:auto;font-size:11px;font-family:Consolas,'Courier New',monospace;color:var(--muted);width:340px;margin-top:4px}
+#logBox.open{display:block}
+#logBox p{margin:1px 0}
+#logBox .ts{color:var(--accent)}
+
+@media(max-width:800px){
+  .form-grid{grid-template-columns:1fr}
+  .charts-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ TOPBAR ═══ -->
+<div class="topbar">
+  <span class="logo"><b>Bacterial Colony</b> ABM</span>
+  <div style="display:flex;align-items:center;gap:12px">
+    <span class="status s-idle" id="statusBadge">idle</span>
+    <div class="actions">
+      <button onclick="openModal('charts')">Charts</button>
+      <button onclick="openModal('settings')">Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ WORLD ═══ -->
+<div class="world-wrap" id="worldWrap">
+  <canvas id="world"></canvas>
+  <div id="tooltip"></div>
+
+  <!-- Stats -->
+  <div id="statsPanel">
+    <div class="sp-head" onclick="toggleStats()">Stats <span id="statsChev">▾</span></div>
+    <div class="sp-body">
+      <div class="sp-row"><span class="k">Population</span><span class="v" id="sPop">0</span></div>
+      <div class="sp-row"><span class="k">Fitness</span><span class="v" id="sFit">—</span></div>
+      <div class="sp-row"><span class="k">Resource</span><span class="v" id="sRes">—</span></div>
+      <div class="sp-row"><span class="k">Antibiotic</span><span class="v" id="sAb">—</span></div>
+      <div class="sp-row"><span class="k">Cooperation</span><span class="v" id="sCoop">—</span></div>
+      <div class="sp-row"><span class="k">Competition</span><span class="v" id="sComp">—</span></div>
+      <div class="sp-row"><span class="k">Biofilm</span><span class="v" id="sBio">—</span></div>
+      <div class="sp-row"><span class="k">Resistance</span><span class="v" id="sRst">—</span></div>
+      <div class="sp-row"><span class="k">MutFreq</span><span class="v" id="sMut">—</span></div>
+      <div class="sp-row"><span class="k">HGT</span><span class="v" id="sHGT">0</span></div>
+      <div class="sp-row"><span class="k">Divisions</span><span class="v" id="sDiv">0</span></div>
+      <div class="sp-row"><span class="k">Deaths</span><span class="v" id="sDth">0</span></div>
+      <div class="sp-row"><span class="k">Genotypes</span><span class="v" id="sGen">—</span></div>
+    </div>
+  </div>
+
+  <!-- Layers -->
+  <div id="layersPanel">
+    <label><input type="checkbox" id="layResource" checked> Resource</label>
+    <label><input type="checkbox" id="layAntibiotic"> Antibiotic</label>
+    <label><input type="checkbox" id="layBiofilm"> Biofilm</label>
+    <label><input type="checkbox" id="laySignal"> Signal</label>
+  </div>
+
+  <!-- Log -->
+  <div id="logWrap">
+    <div id="logToggle" onclick="document.getElementById('logBox').classList.toggle('open')">Log</div>
+    <div id="logBox"></div>
+  </div>
+</div>
+
+<!-- ═══ BOTTOM BAR ═══ -->
+<div class="bottombar">
+  <div class="controls">
+    <button id="btnStart" onclick="startSim()" title="Start">▶</button>
+    <button id="btnPause" onclick="pauseSim()" disabled title="Pause">⏸</button>
+    <button id="btnStop" onclick="stopSim()" disabled title="Stop">⏹</button>
+  </div>
+  <div class="sep"></div>
+  <div class="field">
+    <span>Speed</span>
+    <input type="range" id="speedSlider" min="0" max="500" value="50" oninput="setSpeed(this.value)">
+    <span class="val" id="speedLabel">0.050s</span>
+  </div>
+  <div class="sep"></div>
+  <div class="field">
+    <span>Update</span>
+    <input type="range" id="intervalSlider" min="1" max="30" value="3" oninput="setInterval2(this.value)">
+    <span class="val" id="intervalLabel">3</span>
+  </div>
+  <div class="epoch">
+    <span>Epoch</span>
+    <strong id="epochNum">0</strong>
+    <span id="epochDenom">/ 200</span>
+    <div class="progress"><div class="bar" id="progressBar"></div></div>
+  </div>
+</div>
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<div class="modal-bg" id="modal-settings">
+  <div class="modal">
+    <div class="modal-head"><h2>Settings</h2><button class="close" onclick="closeModal('settings')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group"><label>Epochs</label><input type="number" id="cfgEpochs" value="200"/></div>
+        <div class="form-group"><label>Initial Population</label><input type="number" id="cfgInitPop" value="300"/></div>
+        <div class="form-group"><label>Carrying Capacity</label><input type="number" id="cfgCapacity" value="10000"/></div>
+        <div class="form-group"><label>Mutation Rate</label><input type="number" id="cfgMutation" value="0.01" step="0.001"/></div>
+        <div class="form-group"><label>Resource Scenario</label>
+          <select id="cfgResource"><option value="resource-rich">Resource Rich</option><option value="resource-depleted">Resource Depleted</option></select></div>
+        <div class="form-group"><label>Antibiotic Mode</label>
+          <select id="cfgABMode"><option value="gradual">Gradual</option><option value="spike">Spike</option></select></div>
+        <div class="form-group"><label>Antibiotic Start Epoch</label><input type="number" id="cfgABStart" value="60"/></div>
+        <div class="form-group"><label>Random Seed</label><input type="text" id="cfgSeed" value="42" placeholder="blank = random"/></div>
+      </div>
+      <div class="form-footer">
+        <button class="btn-primary" onclick="startFromSettings()">Start Simulation</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ CHARTS MODAL ═══ -->
+<div class="modal-bg" id="modal-charts">
+  <div class="modal" style="max-width:1100px">
+    <div class="modal-head"><h2>Charts</h2><button class="close" onclick="closeModal('charts')">✕</button></div>
+    <div class="modal-body">
+      <div class="charts-grid">
+        <div class="chart-cell full"><div class="chart-title">Population by Genotype</div><div class="plotly-chart" id="cPopGeno"></div></div>
+        <div class="chart-cell"><div class="chart-title">Population &amp; Resource</div><div class="plotly-chart" id="cPopRes"></div></div>
+        <div class="chart-cell"><div class="chart-title">Cooperation &amp; Competition</div><div class="plotly-chart" id="cCoopComp"></div></div>
+        <div class="chart-cell"><div class="chart-title">Fitness &amp; Resistance</div><div class="plotly-chart" id="cFitness"></div></div>
+        <div class="chart-cell"><div class="chart-title">Phase Distribution</div><div class="plotly-chart" id="cPhases"></div></div>
+        <div class="chart-cell"><div class="chart-title">Demographics</div><div class="plotly-chart" id="cDemo"></div></div>
+        <div class="chart-cell"><div class="chart-title">Mutation &amp; HGT</div><div class="plotly-chart" id="cMutHGT"></div></div>
+        <div class="chart-cell full"><div class="chart-title">Biofilm &amp; Antibiotic</div><div class="plotly-chart" id="cBioAb"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const socket = io();
+
+// ─── Genotype colors ───
+const GC=['#569cd6','#608b4e','#d16969','#dcdcaa','#c586c0','#9cdcfe','#4ec9b0','#ce9178','#b5cea8','#d7ba7d','#6a9955','#c586c0','#4fc1ff','#d4d4d4','#569cd6','#608b4e','#dcdcaa','#c586c0','#858585','#ce9178'];
+const PHASE_NAMES=['Lag','Log','Stationary','Death'];
+const PHASE_ALPHA=[.45,1,.65,.25];
+
+// ─── State ───
+let snapshot = null;
+let gridW=200, gridH=200;
+
+// ─── World renderer ───
+const CELL = 5; // pixels per grid cell at zoom 1
+const canvas = document.getElementById('world');
+const ctx = canvas.getContext('2d');
+let zoom = 1, offX = 0, offY = 0;
+let dragging = false, lastMX = 0, lastMY = 0;
+let hovered = null;
+
+// Offscreen overlay canvases
+const overlayRes = document.createElement('canvas');
+const overlayAb = document.createElement('canvas');
+const overlayBio = document.createElement('canvas');
+const overlaySig = document.createElement('canvas');
+
+function resizeCanvas(){
+  const w = canvas.parentElement.clientWidth;
+  const h = canvas.parentElement.clientHeight;
+  canvas.width = w; canvas.height = h;
+  render();
+}
+window.addEventListener('resize', resizeCanvas);
+
+function fitView(){
+  const wrap = canvas.parentElement;
+  const ww = wrap.clientWidth, wh = wrap.clientHeight;
+  const worldPx = Math.max(gridW, gridH) * CELL;
+  zoom = Math.min(ww / worldPx, wh / worldPx) * 0.9;
+  offX = (ww - gridW * CELL * zoom) / 2;
+  offY = (wh - gridH * CELL * zoom) / 2;
+}
+
+// Zoom
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const wx = (mx - offX) / zoom, wy = (my - offY) / zoom;
+  const f = e.deltaY > 0 ? 0.9 : 1.1;
+  zoom = Math.max(0.15, Math.min(30, zoom * f));
+  offX = mx - wx * zoom; offY = my - wy * zoom;
+  render();
+}, {passive: false});
+
+// Pan
+canvas.addEventListener('mousedown', e => { dragging = true; lastMX = e.clientX; lastMY = e.clientY; canvas.classList.add('dragging'); });
+canvas.addEventListener('mousemove', e => {
+  if (dragging) { offX += e.clientX - lastMX; offY += e.clientY - lastMY; lastMX = e.clientX; lastMY = e.clientY; render(); }
+  detectHover(e);
+});
+canvas.addEventListener('mouseup', () => { dragging = false; canvas.classList.remove('dragging'); });
+canvas.addEventListener('mouseleave', () => { dragging = false; canvas.classList.remove('dragging'); hovered = null; document.getElementById('tooltip').style.display = 'none'; });
+
+// Hover detection
+function detectHover(e){
+  if (!snapshot || !snapshot.bacteria) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const wx = (mx - offX) / zoom / CELL, wy = (my - offY) / zoom / CELL;
+  let best = null, bestD = 2.5;
+  for (const b of snapshot.bacteria) {
+    const jx = b[0] + jitter(b, 0), jy = b[1] + jitter(b, 1);
+    const dx = jx - wx, dy = jy - wy, d = dx*dx + dy*dy;
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  hovered = best;
+  const tip = document.getElementById('tooltip');
+  if (best) {
+    tip.style.display = 'block';
+    const tx = Math.min(e.clientX - canvas.parentElement.getBoundingClientRect().left + 16, canvas.width - 200);
+    const ty = Math.min(e.clientY - canvas.parentElement.getBoundingClientRect().top + 16, canvas.height - 200);
+    tip.style.left = tx + 'px'; tip.style.top = ty + 'px';
+    tip.innerHTML = `<div class="tt-head" style="color:${GC[best[2]%GC.length]}">Genotype ${best[2]}</div>`
+      + ttRow('Phase', PHASE_NAMES[best[3]])
+      + ttRow('Fitness', best[4])
+      + ttRow('Biomass', best[5])
+      + ttRow('Resistance', best[6])
+      + ttRow('Efficiency', best[7])
+      + ttRow('Toxin Prod', best[8])
+      + ttRow('Public Good', best[9])
+      + ttRow('Biofilm', best[10] ? 'Yes' : 'No')
+      + ttRow('Age', best[11]);
+    render();
+  } else {
+    tip.style.display = 'none';
+    if (hovered !== null) render();
+  }
+}
+function ttRow(k,v){ return `<div class="tt-row"><span class="tt-label">${k}</span><span class="tt-val">${v}</span></div>`; }
+
+// Stable jitter per bacterium
+function jitter(b, axis){
+  const h = ((b[0]*73856093 + b[1]*19349663 + b[2]*83492791 + axis*4256249) & 0x7FFFFFFF) % 1000;
+  return (h / 1000 - 0.5) * 0.65;
+}
+
+// Build overlay image data
+function buildOverlay(oc, grid, colorFn){
+  if (!grid || !grid.length) return;
+  const R = grid.length, C = grid[0].length;
+  oc.width = C; oc.height = R;
+  const octx = oc.getContext('2d');
+  const img = octx.createImageData(C, R);
+  let mn = Infinity, mx = -Infinity;
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) { const v = grid[r][c]; if (v < mn) mn = v; if (v > mx) mx = v; }
+  const rng = mx - mn || 1;
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+    const t = (grid[r][c] - mn) / rng;
+    const [cr,cg,cb,ca] = colorFn(t);
+    const i = (r * C + c) * 4;
+    img.data[i] = cr; img.data[i+1] = cg; img.data[i+2] = cb; img.data[i+3] = ca;
+  }
+  octx.putImageData(img, 0, 0);
+}
+
+function ovGreen(t){ return [50+46*t|0, 80+59*t|0, 40+38*t|0, t*120|0]; }
+function ovRed(t){ return [130+79*t|0, 60+45*t|0, 60+45*t|0, t*130|0]; }
+function ovCyan(t){ return [30+56*t|0, 80+42*t|0, 120+84*t|0, t*110|0]; }
+function ovPurple(t){ return [120+77*t|0, 70+64*t|0, 130+62*t|0, t*100|0]; }
+
+// ─── RENDER ───
+function render(){
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(offX, offY);
+  ctx.scale(zoom, zoom);
+
+  const worldW = gridW * CELL, worldH = gridH * CELL;
+
+  // Background
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, worldW, worldH);
+
+  // Overlays
+  ctx.imageSmoothingEnabled = true;
+  if (document.getElementById('layResource').checked && overlayRes.width)
+    ctx.drawImage(overlayRes, 0, 0, worldW, worldH);
+  if (document.getElementById('layAntibiotic').checked && overlayAb.width)
+    ctx.drawImage(overlayAb, 0, 0, worldW, worldH);
+  if (document.getElementById('layBiofilm').checked && overlayBio.width)
+    ctx.drawImage(overlayBio, 0, 0, worldW, worldH);
+  if (document.getElementById('laySignal').checked && overlaySig.width)
+    ctx.drawImage(overlaySig, 0, 0, worldW, worldH);
+
+  // Grid lines when zoomed in
+  if (zoom > 3) {
+    ctx.strokeStyle = 'rgba(255,255,255,.04)';
+    ctx.lineWidth = .3;
+    for (let i = 0; i <= gridW; i++) { ctx.beginPath(); ctx.moveTo(i*CELL, 0); ctx.lineTo(i*CELL, worldH); ctx.stroke(); }
+    for (let i = 0; i <= gridH; i++) { ctx.beginPath(); ctx.moveTo(0, i*CELL); ctx.lineTo(worldW, i*CELL); ctx.stroke(); }
+  }
+
+  // Bacteria
+  if (snapshot && snapshot.bacteria) {
+    const r = CELL * 0.38;
+    for (const b of snapshot.bacteria) {
+      const jx = b[0] + jitter(b, 0), jy = b[1] + jitter(b, 1);
+      const cx = jx * CELL, cy = jy * CELL;
+      const phase = b[3];
+      const alpha = PHASE_ALPHA[phase] || 1;
+      const col = GC[b[2] % GC.length];
+
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = col;
+      ctx.fill();
+
+      // Biofilm ring
+      if (b[10]) {
+        ctx.strokeStyle = 'rgba(0,122,204,.6)';
+        ctx.lineWidth = Math.max(.5, 1.2 / zoom);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Hovered highlight
+    if (hovered) {
+      const jx = hovered[0] + jitter(hovered, 0), jy = hovered[1] + jitter(hovered, 1);
+      ctx.beginPath();
+      ctx.arc(jx * CELL, jy * CELL, CELL * 0.6, 0, Math.PI * 2);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = Math.max(1, 1.5 / zoom);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+// Layer toggles trigger re-render
+document.querySelectorAll('#layersPanel input').forEach(el => el.addEventListener('change', render));
+
+// ─── Stats ───
+function toggleStats(){
+  const p = document.getElementById('statsPanel');
+  p.classList.toggle('collapsed');
+  document.getElementById('statsChev').textContent = p.classList.contains('collapsed') ? '▸' : '▾';
+}
+
+function updateStats(d){
+  document.getElementById('sPop').textContent = d.total_population.toLocaleString();
+  document.getElementById('sFit').textContent = d.mean_fitness;
+  document.getElementById('sRes').textContent = d.mean_resource;
+  document.getElementById('sAb').textContent = d.mean_antibiotic;
+  document.getElementById('sCoop').textContent = d.cooperation_index;
+  document.getElementById('sComp').textContent = d.competition_index;
+  document.getElementById('sBio').textContent = (d.biofilm_fraction * 100).toFixed(1) + '%';
+  document.getElementById('sRst').textContent = d.mean_resistance;
+  document.getElementById('sMut').textContent = d.mutation_frequency;
+  document.getElementById('sHGT').textContent = d.hgt_events;
+  document.getElementById('sDiv').textContent = d.divisions;
+  document.getElementById('sDth').textContent = d.deaths;
+  document.getElementById('sGen').textContent = Object.keys(d.genotype_counts || {}).length;
+  document.getElementById('epochNum').textContent = d.epoch;
+  document.getElementById('epochDenom').textContent = '/ ' + d.total_epochs;
+  const pct = d.total_epochs > 0 ? (d.epoch / d.total_epochs * 100) : 0;
+  document.getElementById('progressBar').style.width = pct + '%';
+}
+
+// ─── Charts ───
+const DL={paper_bgcolor:'#252526',plot_bgcolor:'#1e1e1e',font:{color:'#cccccc',size:10},margin:{t:8,r:16,b:32,l:44},xaxis:{gridcolor:'#333333',title:'Epoch'},yaxis:{gridcolor:'#333333'},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:9}},showlegend:true};
+const P={responsive:true,displayModeBar:false};
+
+function initCharts(){
+  const ids = ['cPopGeno','cPopRes','cCoopComp','cFitness','cPhases','cDemo','cMutHGT','cBioAb'];
+  ids.forEach(id => Plotly.newPlot(id, [], {...DL, height:240}, P));
+}
+initCharts();
+
+function updateCharts(d){
+  const ep = d.ts_epochs;
+  // Genotype
+  const gt=[];
+  if(d.ts_genotypes){const gs=Object.keys(d.ts_genotypes).sort((a,b)=>+a-+b);
+    for(const g of gs)gt.push({x:ep,y:d.ts_genotypes[g],name:'G'+g,mode:'lines',line:{width:1.3,color:GC[+g%GC.length]}});}
+  Plotly.react('cPopGeno',gt,{...DL,yaxis:{...DL.yaxis,title:'Pop'},height:240});
+  Plotly.react('cPopRes',[{x:ep,y:d.ts_population,name:'Pop',line:{color:'#569cd6',width:2}},{x:ep,y:d.ts_resource,name:'Res',yaxis:'y2',line:{color:'#608b4e',width:1.5,dash:'dot'}}],{...DL,yaxis:{...DL.yaxis,title:'Pop'},yaxis2:{gridcolor:'#333333',title:'Res',side:'right',overlaying:'y'},height:240});
+  Plotly.react('cCoopComp',[{x:ep,y:d.ts_cooperation,name:'Coop',line:{color:'#dcdcaa',width:2}},{x:ep,y:d.ts_competition,name:'Comp',line:{color:'#d16969',width:2}}],{...DL,yaxis:{...DL.yaxis,title:'Index'},height:240});
+  Plotly.react('cFitness',[{x:ep,y:d.ts_fitness,name:'Fitness',line:{color:'#569cd6',width:2}},{x:ep,y:d.ts_resistance,name:'Resist',line:{color:'#c586c0',width:1.5,dash:'dash'}}],{...DL,yaxis:{...DL.yaxis,title:'Val'},height:240});
+  Plotly.react('cPhases',[
+    {x:ep,y:d.ts_phase_lag,name:'Lag',stackgroup:'p',line:{width:0},fillcolor:'rgba(86,156,214,.3)'},
+    {x:ep,y:d.ts_phase_log,name:'Log',stackgroup:'p',line:{width:0},fillcolor:'rgba(96,139,78,.3)'},
+    {x:ep,y:d.ts_phase_stat,name:'Stat',stackgroup:'p',line:{width:0},fillcolor:'rgba(220,220,170,.3)'},
+    {x:ep,y:d.ts_phase_death,name:'Death',stackgroup:'p',line:{width:0},fillcolor:'rgba(209,105,105,.3)'}
+  ],{...DL,yaxis:{...DL.yaxis,title:'Count'},height:240});
+  Plotly.react('cDemo',[{x:ep,y:d.ts_divisions,name:'Div',type:'bar',marker:{color:'rgba(96,139,78,.5)'}},{x:ep,y:d.ts_deaths,name:'Death',type:'bar',marker:{color:'rgba(209,105,105,.5)'}}],{...DL,barmode:'group',yaxis:{...DL.yaxis,title:'N'},height:240});
+  Plotly.react('cMutHGT',[{x:ep,y:d.ts_mutation,name:'Mut',line:{color:'#dcdcaa',width:2}},{x:ep,y:d.ts_hgt,name:'HGT',yaxis:'y2',line:{color:'#c586c0',width:1.5,dash:'dash'}}],{...DL,yaxis:{...DL.yaxis,title:'Freq'},yaxis2:{gridcolor:'#333333',title:'HGT',side:'right',overlaying:'y'},height:240});
+  Plotly.react('cBioAb',[{x:ep,y:d.ts_biofilm,name:'Biofilm',line:{color:'#569cd6',width:2}},{x:ep,y:d.ts_antibiotic,name:'Antibiotic',yaxis:'y2',line:{color:'#d16969',width:1.5,dash:'dot'}}],{...DL,yaxis:{...DL.yaxis,title:'Biofilm%'},yaxis2:{gridcolor:'#333333',title:'Ab',side:'right',overlaying:'y'},height:240});
+}
+
+// ─── Modals ───
+function openModal(name){ document.getElementById('modal-'+name).classList.add('open'); if(name==='charts'&&snapshot) updateCharts(snapshot); }
+function closeModal(name){ document.getElementById('modal-'+name).classList.remove('open'); }
+document.querySelectorAll('.modal-bg').forEach(el => el.addEventListener('click', e => { if(e.target===el) el.classList.remove('open'); }));
+
+// ─── Socket ───
+socket.on('snapshot', d => {
+  snapshot = d;
+  if (d.grid_w) gridW = d.grid_w;
+  if (d.grid_h) gridH = d.grid_h;
+  buildOverlay(overlayRes, d.resource_grid, ovGreen);
+  buildOverlay(overlayAb, d.antibiotic_grid, ovRed);
+  buildOverlay(overlayBio, d.biofilm_grid, ovCyan);
+  buildOverlay(overlaySig, d.signal_grid, ovPurple);
+  updateStats(d);
+  render();
+  if (document.getElementById('modal-charts').classList.contains('open')) updateCharts(d);
+});
+
+socket.on('status', d => {
+  const badge = document.getElementById('statusBadge');
+  const bS = document.getElementById('btnStart'), bP = document.getElementById('btnPause'), bT = document.getElementById('btnStop');
+  if (d.running && !d.paused) { badge.className='status s-run'; badge.textContent='running'; bS.disabled=true; bP.disabled=false; bT.disabled=false; }
+  else if (d.running && d.paused) { badge.className='status s-pause'; badge.textContent='paused'; bS.disabled=true; bP.disabled=false; bT.disabled=false; }
+  else { badge.className='status s-idle'; badge.textContent='idle'; bS.disabled=false; bP.disabled=true; bT.disabled=true; }
+});
+
+socket.on('log', d => {
+  const box = document.getElementById('logBox');
+  box.innerHTML += `<p><span class="ts">[${new Date().toLocaleTimeString()}]</span> ${d.msg}</p>`;
+  box.scrollTop = box.scrollHeight;
+});
+
+socket.on('config_defaults', cfg => {
+  if(cfg.simulation) document.getElementById('cfgEpochs').value = cfg.simulation.epochs || 200;
+  if(cfg.bacterium) document.getElementById('cfgInitPop').value = cfg.bacterium.initial_count || 300;
+  if(cfg.population) document.getElementById('cfgCapacity').value = cfg.population.carrying_capacity || 10000;
+  if(cfg.mutation) document.getElementById('cfgMutation').value = cfg.mutation.rate || 0.01;
+  if(cfg.antibiotic) document.getElementById('cfgABStart').value = cfg.antibiotic.start_epoch || 60;
+  if(cfg.simulation && cfg.simulation.seed != null) document.getElementById('cfgSeed').value = cfg.simulation.seed;
+});
+
+// ─── Controls ───
+function startSim(){
+  socket.emit('start', {
+    epochs: document.getElementById('cfgEpochs').value,
+    initial_count: document.getElementById('cfgInitPop').value,
+    carrying_capacity: document.getElementById('cfgCapacity').value,
+    resource_scenario: document.getElementById('cfgResource').value,
+    antibiotic_mode: document.getElementById('cfgABMode').value,
+    antibiotic_start: document.getElementById('cfgABStart').value,
+    mutation_rate: document.getElementById('cfgMutation').value,
+    seed: document.getElementById('cfgSeed').value || null,
+    speed: parseFloat(document.getElementById('speedSlider').value) / 1000,
+    update_interval: document.getElementById('intervalSlider').value,
+  });
+}
+function startFromSettings(){ closeModal('settings'); startSim(); }
+function pauseSim(){ socket.emit('pause'); }
+function stopSim(){ socket.emit('stop'); }
+function setSpeed(v){
+  const s = parseFloat(v) / 1000;
+  document.getElementById('speedLabel').textContent = s.toFixed(3) + 's';
+  socket.emit('set_speed', {value: s});
+}
+function setInterval2(v){
+  document.getElementById('intervalLabel').textContent = v;
+  socket.emit('set_update_interval', {value: v});
+}
+
+// Init
+fitView();
+resizeCanvas();
+</script>
+</body>
+</html>
