@@ -219,8 +219,8 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
   <div class="sep"></div>
   <div class="field">
     <span>Speed</span>
-    <input type="range" id="speedSlider" min="0" max="500" value="50" oninput="setSpeed(this.value)">
-    <span class="val" id="speedLabel">0.050s</span>
+    <input type="range" id="speedSlider" min="0" max="500" value="0" oninput="setSpeed(this.value)">
+    <span class="val" id="speedLabel">0.000s</span>
   </div>
   <div class="sep"></div>
   <div class="field">
@@ -774,126 +774,91 @@ function render3D(){
       name:'Bacteria'});
   }
 
-  // === Helper: seedable pseudo-random for stable jitter across frames ===
-  function _cloudHash(a,b,c){ let h=((a*73856093)^(b*19349663)^(c*83492791))&0x7FFFFFFF; return (h%10000)/10000; }
-
-  // === Resource cloud (soft volumetric fog) ===
+  // === Resource dots (lime-yellow — distinct from bacteria) ===
   if(snapshot.resource_grid && document.getElementById('layResource').checked){
     const g = snapshot.resource_grid;
     const R=g.length, C=g[0].length;
-    const sx=[], sy=[], sz=[], sc=[], ssz=[];
-    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
+    const sx=[], sy=[], sz=[], sht=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/25));
     const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
     let mx=0;
     for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
     mx=mx||1;
-    const PASSES=3; // overlapping soft blobs per cell
     for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
       const v=g[r][c]/mx;
-      if(v<0.06) continue;
-      for(let p=0;p<PASSES;p++){
-        const h1=_cloudHash(r,c,p), h2=_cloudHash(c,r,p+7), h3=_cloudHash(r+c,p,r);
-        const jx = (h1-0.5)*step*(gridW/C)*1.2;
-        const jy = (h2-0.5)*step*(gridH/R)*1.2;
-        const jz = (h3-0.3)*zMax3*0.4;
-        sx.push(c*(gridW/C)+jx); sy.push(r*(gridH/R)+jy); sz.push(jz);
-        const a = 0.04 + v*0.08;
-        sc.push('rgba('+(50+160*(1-v))+','+(140+70*v)+',50,'+a.toFixed(3)+')');
-        ssz.push(Math.max(10, 24*v));
-      }
+      if(v<0.08) continue;
+      sx.push(c*(gridW/C)); sy.push(r*(gridH/R)); sz.push(-0.3);
+      sht.push('Resource: '+(g[r][c]).toFixed(2));
     }
     if(sx.length) traces.push({type:'scatter3d',mode:'markers',x:sx,y:sy,z:sz,
-      marker:{size:ssz,color:sc,opacity:1,sizemode:'diameter'},
-      hoverinfo:'skip',showlegend:false,name:'Resource'});
+      text:sht,hoverinfo:'text',
+      marker:{size:2.5,color:'#b5e61d',opacity:0.6,symbol:'circle'},
+      showlegend:false,name:'Resource'});
   }
 
-  // === Antibiotic cloud (red/coral fog) ===
+  // === Antibiotic dots (orange — distinct from bacteria) ===
   if(snapshot.antibiotic_grid && document.getElementById('layAntibiotic').checked){
     const g = snapshot.antibiotic_grid;
     const R=g.length, C=g[0].length;
-    const ax=[],ay=[],az=[],ac=[],asz=[];
-    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
-    const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
+    const ax=[],ay=[],az=[],aht=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/25));
     let mx=0;
     for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
     if(mx>0.01){
-      const PASSES=3;
-      for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
-        const v=g[r][c]/mx;
-        if(v<0.06) continue;
-        for(let p=0;p<PASSES;p++){
-          const h1=_cloudHash(r+1,c+2,p+10), h2=_cloudHash(c+3,r,p+13), h3=_cloudHash(r,p+5,c);
-          ax.push(c*(gridW/C)+(h1-0.5)*step*(gridW/C)*1.2);
-          ay.push(r*(gridH/R)+(h2-0.5)*step*(gridH/R)*1.2);
-          az.push((h3-0.2)*zMax3*0.6);
-          const a = 0.04 + v*0.1;
-          ac.push('rgba('+(190+50*v)+','+(60+30*v)+','+(50+25*v)+','+a.toFixed(3)+')');
-          asz.push(Math.max(10, 26*v));
-        }
-      }
-      if(ax.length) traces.push({type:'scatter3d',mode:'markers',x:ax,y:ay,z:az,
-        marker:{size:asz,color:ac,opacity:1,sizemode:'diameter'},
-        hoverinfo:'skip',showlegend:false,name:'Antibiotic'});
-    }
-  }
-
-  // === Biofilm cloud (cyan/blue matrix fog) ===
-  if(snapshot.biofilm_grid && document.getElementById('layBiofilm').checked){
-    const g = snapshot.biofilm_grid;
-    const R=g.length, C=g[0].length;
-    const fx=[],fy=[],fz=[],fc=[],fsz=[];
-    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
-    const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
-    let mx=0;
-    for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
-    if(mx>0){
-      const PASSES=3;
       for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
         const v=g[r][c]/mx;
         if(v<0.08) continue;
-        for(let p=0;p<PASSES;p++){
-          const h1=_cloudHash(r+5,c+1,p+20), h2=_cloudHash(c+6,r+2,p+23), h3=_cloudHash(r+c,p+9,c);
-          fx.push(c*(gridW/C)+(h1-0.5)*step*(gridW/C)*1.0);
-          fy.push(r*(gridH/R)+(h2-0.5)*step*(gridH/R)*1.0);
-          fz.push((h3-0.3)*zMax3*0.3); // biofilm stays near surface
-          const a = 0.05 + v*0.12;
-          fc.push('rgba('+(30+70*v)+','+(90+50*v)+','+(140+80*v)+','+a.toFixed(3)+')');
-          fsz.push(Math.max(12, 28*v));
-        }
+        ax.push(c*(gridW/C)); ay.push(r*(gridH/R)); az.push(-0.5);
+        aht.push('Antibiotic: '+(g[r][c]).toFixed(2));
       }
-      if(fx.length) traces.push({type:'scatter3d',mode:'markers',x:fx,y:fy,z:fz,
-        marker:{size:fsz,color:fc,opacity:1,sizemode:'diameter'},
-        hoverinfo:'skip',showlegend:false,name:'Biofilm'});
+      if(ax.length) traces.push({type:'scatter3d',mode:'markers',x:ax,y:ay,z:az,
+        text:aht,hoverinfo:'text',
+        marker:{size:2.5,color:'#ff8c00',opacity:0.6,symbol:'diamond'},
+        showlegend:false,name:'Antibiotic'});
     }
   }
 
-  // === Signal cloud (purple haze fog) ===
-  if(snapshot.signal_grid && document.getElementById('laySignal').checked){
-    const g = snapshot.signal_grid;
+  // === Biofilm dots (cyan — distinct from bacteria) ===
+  if(snapshot.biofilm_grid && document.getElementById('layBiofilm').checked){
+    const g = snapshot.biofilm_grid;
     const R=g.length, C=g[0].length;
-    const gx=[],gy=[],gz=[],gc=[],gsz=[];
-    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
-    const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
+    const fx=[],fy=[],fz=[],fht=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/25));
     let mx=0;
     for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
     if(mx>0){
-      const PASSES=3;
       for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
         const v=g[r][c]/mx;
         if(v<0.1) continue;
-        for(let p=0;p<PASSES;p++){
-          const h1=_cloudHash(r+8,c+4,p+30), h2=_cloudHash(c+9,r+3,p+33), h3=_cloudHash(r,p+15,c+7);
-          gx.push(c*(gridW/C)+(h1-0.5)*step*(gridW/C)*1.3);
-          gy.push(r*(gridH/R)+(h2-0.5)*step*(gridH/R)*1.3);
-          gz.push((h3-0.2)*zMax3*0.5);
-          const a = 0.03 + v*0.07;
-          gc.push('rgba('+(130+70*v)+','+(75+60*v)+','+(150+60*v)+','+a.toFixed(3)+')');
-          gsz.push(Math.max(8, 20*v));
-        }
+        fx.push(c*(gridW/C)); fy.push(r*(gridH/R)); fz.push(-0.2);
+        fht.push('Biofilm: '+(g[r][c]).toFixed(2));
+      }
+      if(fx.length) traces.push({type:'scatter3d',mode:'markers',x:fx,y:fy,z:fz,
+        text:fht,hoverinfo:'text',
+        marker:{size:2.5,color:'#00e5ff',opacity:0.6,symbol:'square'},
+        showlegend:false,name:'Biofilm'});
+    }
+  }
+
+  // === Signal dots (magenta — distinct from bacteria) ===
+  if(snapshot.signal_grid && document.getElementById('laySignal').checked){
+    const g = snapshot.signal_grid;
+    const R=g.length, C=g[0].length;
+    const gx=[],gy=[],gz=[],ght=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/25));
+    let mx=0;
+    for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
+    if(mx>0){
+      for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
+        const v=g[r][c]/mx;
+        if(v<0.12) continue;
+        gx.push(c*(gridW/C)); gy.push(r*(gridH/R)); gz.push(-0.4);
+        ght.push('Signal: '+(g[r][c]).toFixed(3));
       }
       if(gx.length) traces.push({type:'scatter3d',mode:'markers',x:gx,y:gy,z:gz,
-        marker:{size:gsz,color:gc,opacity:1,sizemode:'diameter'},
-        hoverinfo:'skip',showlegend:false,name:'Signal'});
+        text:ght,hoverinfo:'text',
+        marker:{size:2,color:'#ff00ff',opacity:0.5,symbol:'cross'},
+        showlegend:false,name:'Signal'});
     }
   }
 
@@ -939,7 +904,8 @@ function closeModal(name){ document.getElementById('modal-'+name).classList.remo
 document.querySelectorAll('.modal-bg').forEach(el => el.addEventListener('click', e => { if(e.target===el) el.classList.remove('open'); }));
 
 // ─── Socket ───
-socket.on('snapshot', d => {
+// ── Snapshot fetching via HTTP (fully decoupled from sim thread) ──
+function applySnapshot(d){
   snapshot = d;
   if (d.grid_w) gridW = d.grid_w;
   if (d.grid_h) gridH = d.grid_h;
@@ -951,6 +917,43 @@ socket.on('snapshot', d => {
   if(viewMode === '3d') render3D();
   else render();
   if (document.getElementById('modal-charts').classList.contains('open')) updateCharts(d);
+}
+
+socket.on('snapshot', d => { applySnapshot(d); });
+
+// HTTP polling: sim writes to file, UI fetches at its own pace
+let _pullTimer = null;
+let _lastPulledEpoch = -1;
+let _fetchInFlight = false;
+function fetchSnapshot(){
+  if(_fetchInFlight) return; // don't stack requests
+  _fetchInFlight = true;
+  fetch('/api/snapshot')
+    .then(r => { if(r.ok && r.status===200) return r.json(); return null; })
+    .then(d => {
+      _fetchInFlight = false;
+      if(!d || !d.epoch) return;
+      if(d.epoch === _lastPulledEpoch) return; // no new data
+      _lastPulledEpoch = d.epoch;
+      applySnapshot(d);
+    })
+    .catch(()=>{ _fetchInFlight = false; });
+}
+function startSnapshotPull(){
+  if(_pullTimer) return;
+  _pullTimer = setInterval(fetchSnapshot, 200); // 5 fps max
+}
+function stopSnapshotPull(){
+  if(_pullTimer){ clearInterval(_pullTimer); _pullTimer = null; }
+  // One final fetch to get the latest state
+  fetchSnapshot();
+}
+
+// Also listen for epoch ticks to update progress bar even between fetches
+socket.on('epoch_tick', d => {
+  document.getElementById('epochNum').textContent = d.epoch;
+  const pct = d.total > 0 ? (d.epoch / d.total * 100) : 0;
+  document.getElementById('progressBar').style.width = pct + '%';
 });
 
 let simState = 'idle'; // 'idle' | 'running' | 'paused'
@@ -962,20 +965,26 @@ socket.on('status', d => {
     simState='running'; badge.className='status s-run'; badge.textContent='running';
     pp.innerHTML='⏸'; pp.title='Pause'; bT.disabled=false;
     vmBtn.disabled=true; vmBtn.style.opacity='.4'; vmBtn.title='Cannot change during simulation';
+    _lastPulledEpoch = -1; // reset so new sim's first frame is never skipped
+    startSnapshotPull();
   } else if (d.running && d.paused) {
     simState='paused'; badge.className='status s-pause'; badge.textContent='paused';
     pp.innerHTML='▶'; pp.title='Resume'; bT.disabled=false;
     vmBtn.disabled=true; vmBtn.style.opacity='.4'; vmBtn.title='Cannot change during simulation';
+    stopSnapshotPull();
   } else {
     simState='idle'; badge.className='status s-idle'; badge.textContent='idle';
     pp.innerHTML='▶'; pp.title='Start'; bT.disabled=true;
     vmBtn.disabled=false; vmBtn.style.opacity='1'; vmBtn.title='Switch between 2D and 3D view';
+    stopSnapshotPull();
   }
 });
 
 socket.on('sim_complete', () => {
   const btn = document.getElementById('btnReport');
   if(btn){ btn.style.opacity='1'; btn.style.pointerEvents='auto'; btn.title='Download report (charts + CSV)'; }
+  // Final fetch to show completed state
+  fetchSnapshot();
 });
 
 socket.on('log', d => {
@@ -1071,6 +1080,8 @@ function downloadReport(){
 // Init
 fitView();
 resizeCanvas();
+// Fetch initial state from file (if sim was already running or completed)
+fetchSnapshot();
 </script>
 </body>
 </html>

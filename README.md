@@ -304,7 +304,7 @@ All parameters live in [`config.yaml`](config.yaml). Key settings for the defaul
 ├── templates/
 │   └── index.html     # Interactive dashboard UI (Canvas + Plotly + 3D)
 ├── Dockerfile         # Container deployment
-├── requirements.txt   # Python dependencies (numpy, scipy, torch, mesa, flask...)
+├── requirements.txt   # Python dependencies (numpy, scipy, mesa, flask — torch installed separately)
 └── TEAM.txt           # Team info
 ```
 
@@ -331,6 +331,14 @@ source venv/bin/activate        # Linux/Mac
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Install PyTorch — pick ONE:
+# CPU only (smaller, ~200 MB):
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+# NVIDIA GPU (CUDA 12.6, ~2 GB):
+# pip install torch --index-url https://download.pytorch.org/whl/cu126
+# Apple Silicon (MPS):
+# pip install torch
 
 # Run headless simulation (generates CSV + 15 charts)
 python main.py --epochs 200 --seed 42

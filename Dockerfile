@@ -5,6 +5,7 @@ WORKDIR /app
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Copy project files
 COPY config.yaml .
@@ -14,6 +15,9 @@ COPY simulate.py .
 COPY visualize.py .
 COPY dashboard.py .
 COPY main.py .
+COPY gpu_utils.py .
+COPY rl_agent.py .
+COPY mesa_model.py .
 COPY TEAM.txt .
 COPY templates/ templates/
 

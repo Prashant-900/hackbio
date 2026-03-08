@@ -145,8 +145,51 @@ def extract_state(bact, env, cfg: dict) -> np.ndarray:
 
 
 def extract_states_batch(agents: list, env, cfg: dict) -> np.ndarray:
-    """Vectorised state extraction for GPU-batched inference."""
-    return np.stack([extract_state(a, env, cfg) for a in agents])
+    """Fully vectorised state extraction — no per-agent Python loop."""
+    n = len(agents)
+    if n == 0:
+        return np.empty((0, STATE_DIM), dtype=np.float32)
+
+    res_max = max(cfg.get("resource", {}).get("max_concentration", 30.0), 1e-9)
+    ab_max = max(cfg.get("antibiotic", {}).get("max_concentration", 8.0), 1e-9)
+    max_age = max(cfg.get("bacterium", {}).get("max_age", 300), 1)
+    z_levels = max(cfg.get("grid", {}).get("z_levels", 10), 1)
+    temp = getattr(env, "temperature", 37.0)
+    pressure = getattr(env, "pressure_atm", 1.0)
+
+    # Pre-extract arrays from agent objects
+    xs = np.array([a.x for a in agents], dtype=np.intp)
+    ys = np.array([a.y for a in agents], dtype=np.intp)
+
+    states = np.empty((n, STATE_DIM), dtype=np.float32)
+    states[:, 0] = np.minimum(1.0, env.resource[ys, xs] / res_max)
+    states[:, 1] = np.minimum(1.0, env.antibiotic[ys, xs] / ab_max)
+
+    # Foreign toxin — vectorised per-genotype
+    gids = np.array([a.genotype.id for a in agents], dtype=np.intp)
+    tox = np.zeros(n, dtype=np.float32)
+    for gid in np.unique(gids):
+        mask = gids == gid
+        idxs = np.where(mask)[0]
+        tox_sum = np.zeros(env.resource.shape, dtype=np.float64)
+        for g, grid in env.toxin_grids.items():
+            if g != gid:
+                tox_sum += grid
+        tox[idxs] = tox_sum[ys[idxs], xs[idxs]]
+    states[:, 2] = np.minimum(1.0, tox / 5.0)
+
+    states[:, 3] = np.minimum(1.0, env.signal[ys, xs] / 2.0)
+    states[:, 4] = np.minimum(1.0, env.biofilm[ys, xs] / 5.0)
+    states[:, 5] = np.minimum(1.0, np.array([a.biomass for a in agents], dtype=np.float32) / 3.0)
+    states[:, 6] = np.minimum(1.0, np.array([a.age for a in agents], dtype=np.float32) / max_age)
+    states[:, 7] = np.array([PHASE_INT_MAP.get(a.phase.name, 0) for a in agents], dtype=np.float32) / 3.0
+    states[:, 8] = np.minimum(1.0, np.array([a.genotype.antibiotic_resistance for a in agents], dtype=np.float32))
+    states[:, 9] = np.clip(np.array([a.fitness for a in agents], dtype=np.float32), 0.0, 1.0)
+    states[:, 10] = np.clip((temp - 10.0) / 35.0, 0.0, 1.0)
+    states[:, 11] = np.clip((pressure - 0.5) / 5.0, 0.0, 1.0)
+    states[:, 12] = np.minimum(1.0, np.array([getattr(a, 'z', 0.0) for a in agents], dtype=np.float32) / z_levels)
+    states[:, 13] = np.array([float(a.biofilm_member) for a in agents], dtype=np.float32)
+    return states
 
 
 def compute_reward(

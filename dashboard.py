@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import glob
 import io
+import json
 import os
+import tempfile
 import threading
 import time
 import zipfile
@@ -17,7 +19,7 @@ from collections import Counter
 
 import numpy as np
 import yaml
-from flask import Flask, render_template, send_file
+from flask import Flask, jsonify, render_template, send_file
 from flask_socketio import SocketIO, emit
 
 from agent import Phase
@@ -45,8 +47,13 @@ sim_lock = threading.Lock()
 sim_running = False
 sim_paused = False
 update_interval = 3
-sim_speed = 0.05  # seconds delay between epochs (lower = faster)
+sim_speed = 0.0  # default: no delay (fastest)
 sim_view_mode = "2d"  # '2d' or '3d' — affects z-axis movement
+
+# Decoupled rendering: sim stores latest snapshot, frontend pulls on its own pace
+_latest_snapshot: dict | None = None
+_snapshot_lock = threading.Lock()
+_snapshot_epoch: int = -1  # epoch of latest cached snapshot
 
 PHASE_INT = {Phase.LAG: 0, Phase.LOG: 1, Phase.STATIONARY: 2, Phase.DEATH: 3}
 
@@ -63,7 +70,7 @@ def _downsample(grid: np.ndarray, target: int = 100) -> list[list[float]]:
 
 
 def _bacteria_list(agents: list) -> list[list]:
-    """Compact per-bacterium data for the world view."""
+    """Compact per-bacterium data for the world view — optimized."""
     out = []
     for a in agents:
         if not a.alive:
@@ -85,10 +92,10 @@ def _bacteria_list(agents: list) -> list[list]:
     return out
 
 
-def build_snapshot(sim: Simulation) -> dict:
-    alive = [a for a in sim.agents if a.alive]
+def build_snapshot(sim_obj: Simulation) -> dict:
+    alive = [a for a in sim_obj.agents if a.alive]
     total_pop = len(alive)
-    latest = sim.metrics[-1] if sim.metrics else {}
+    latest = sim_obj.metrics[-1] if sim_obj.metrics else {}
 
     geno_counts = dict(Counter(a.genotype.id for a in alive))
     phase_counts = dict(Counter(a.phase.name for a in alive))
@@ -102,31 +109,31 @@ def build_snapshot(sim: Simulation) -> dict:
         mean_resistance = mean_efficiency = mean_fitness = 0.0
 
     # Overlay grids (downsampled for field visualization)
-    total_toxin = np.zeros((sim.env.height, sim.env.width), dtype=np.float64)
-    for grid in sim.env.toxin_grids.values():
+    total_toxin = np.zeros((sim_obj.env.height, sim_obj.env.width), dtype=np.float64)
+    for grid in sim_obj.env.toxin_grids.values():
         total_toxin += grid
 
     # Time-series
-    ts = lambda key: [m[key] for m in sim.metrics]
-    ts_get = lambda key, d=0: [m.get(key, d) for m in sim.metrics]
+    ts = lambda key: [m[key] for m in sim_obj.metrics]
+    ts_get = lambda key, d=0: [m.get(key, d) for m in sim_obj.metrics]
 
     # Per-genotype time series
     all_genos: set[int] = set()
-    for m in sim.metrics:
+    for m in sim_obj.metrics:
         all_genos.update(m["genotype_counts"].keys())
     geno_ts = {}
     for g in sorted(all_genos):
-        geno_ts[str(g)] = [m["genotype_counts"].get(g, 0) for m in sim.metrics]
+        geno_ts[str(g)] = [m["genotype_counts"].get(g, 0) for m in sim_obj.metrics]
 
     return {
-        "epoch": sim.epoch,
-        "total_epochs": sim.cfg["simulation"]["epochs"],
+        "epoch": sim_obj.epoch,
+        "total_epochs": sim_obj.cfg["simulation"]["epochs"],
         "total_population": total_pop,
-        "carrying_capacity": sim.cfg["population"]["carrying_capacity"],
-        "grid_w": sim.env.width,
-        "grid_h": sim.env.height,
-        "mean_resource": round(sim.env.mean_resource(), 3),
-        "mean_antibiotic": round(sim.env.mean_antibiotic(), 4),
+        "carrying_capacity": sim_obj.cfg["population"]["carrying_capacity"],
+        "grid_w": sim_obj.env.width,
+        "grid_h": sim_obj.env.height,
+        "mean_resource": round(sim_obj.env.mean_resource(), 3),
+        "mean_antibiotic": round(sim_obj.env.mean_antibiotic(), 4),
         "genotype_counts": geno_counts,
         "phase_counts": phase_counts,
         "cooperation_index": latest.get("cooperation_index", 0),
@@ -142,12 +149,12 @@ def build_snapshot(sim: Simulation) -> dict:
         "deaths": latest.get("deaths", 0),
         # Per-bacterium data for world view
         "bacteria": _bacteria_list(alive),
-        # Overlay grids
-        "resource_grid": _downsample(sim.env.resource, 100),
-        "antibiotic_grid": _downsample(sim.env.antibiotic, 100),
-        "signal_grid": _downsample(sim.env.signal, 100),
-        "biofilm_grid": _downsample(sim.env.biofilm.astype(np.float64), 100),
-        "toxin_grid": _downsample(total_toxin, 100),
+        # Overlay grids (downsampled for smaller payloads)
+        "resource_grid": _downsample(sim_obj.env.resource, 80),
+        "antibiotic_grid": _downsample(sim_obj.env.antibiotic, 80),
+        "signal_grid": _downsample(sim_obj.env.signal, 80),
+        "biofilm_grid": _downsample(sim_obj.env.biofilm.astype(np.float64), 80),
+        "toxin_grid": _downsample(total_toxin, 80),
         # Time-series
         "ts_epochs": ts("time_step"),
         "ts_population": ts("total_population"),
@@ -173,18 +180,46 @@ def build_snapshot(sim: Simulation) -> dict:
         "running": sim_running,
         "paused": sim_paused,
         # Physics
-        "temperature": getattr(sim.env, 'temperature', 37.0),
-        "pressure_atm": getattr(sim.env, 'pressure_atm', 1.0),
-        "ph": getattr(sim.env, 'ph', 7.0),
-        "growth_modifier": round(getattr(sim.env, 'growth_modifier', 1.0), 4),
+        "temperature": getattr(sim_obj.env, 'temperature', 37.0),
+        "pressure_atm": getattr(sim_obj.env, 'pressure_atm', 1.0),
+        "ph": getattr(sim_obj.env, 'ph', 7.0),
+        "growth_modifier": round(getattr(sim_obj.env, 'growth_modifier', 1.0), 4),
         # RL stats
-        "rl_stats": sim.dqn.stats() if getattr(sim, 'dqn', None) else None,
+        "rl_stats": sim_obj.dqn.stats() if getattr(sim_obj, 'dqn', None) else None,
     }
 
 
-# ── Simulation worker ──
+# ── Snapshot file path ──
+SNAPSHOT_FILE = os.path.join("output", "latest_state.json")
+
+
+# ── Simulation worker (fully decoupled: compute → write file) ──
+def _write_snapshot():
+    """Build snapshot, cache in memory, and write to file atomically.
+    The sim thread calls this; the UI reads the file via HTTP."""
+    global _latest_snapshot, _snapshot_epoch
+    snap = build_snapshot(sim)
+    with _snapshot_lock:
+        _latest_snapshot = snap
+        _snapshot_epoch = sim.epoch
+    # Atomic write: write to temp, then rename (no partial reads)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir="output", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(snap, f, separators=(",", ":"))
+        os.replace(tmp, SNAPSHOT_FILE)
+    except Exception:
+        # If file write fails, in-memory cache still works
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def simulation_worker(cfg: dict):
-    global sim, sim_running, sim_paused
+    global sim, sim_running, sim_paused, _latest_snapshot, _snapshot_epoch
 
     # Inject view mode into config so agents can check it during division
     cfg['_view_mode'] = sim_view_mode
@@ -197,7 +232,7 @@ def simulation_worker(cfg: dict):
 
     total_epochs = cfg["simulation"]["epochs"]
     socketio.emit("status", {"running": True, "paused": False, "epoch": 0})
-    socketio.emit("snapshot", build_snapshot(sim))
+    _write_snapshot()
 
     for ep in range(total_epochs):
         if not sim_running:
@@ -210,12 +245,15 @@ def simulation_worker(cfg: dict):
         with sim_lock:
             sim.step()
 
-        # Speed control delay
+        # Optional speed throttle (0 = no delay = fastest)
         if sim_speed > 0:
             time.sleep(sim_speed)
 
+        # Write snapshot to file — UI fetches independently via /api/snapshot
         if sim.epoch % update_interval == 0 or sim.epoch == 1 or sim.epoch == total_epochs:
-            socketio.emit("snapshot", build_snapshot(sim))
+            _write_snapshot()
+            # Lightweight epoch counter so UI knows to fetch
+            socketio.emit("epoch_tick", {"epoch": sim.epoch, "total": total_epochs})
 
         if len(sim.agents) == 0:
             socketio.emit("log", {"msg": f"Population extinct at epoch {sim.epoch}"})
@@ -230,7 +268,7 @@ def simulation_worker(cfg: dict):
                 socketio.emit("log", {"msg": "Charts saved to charts/ directory."})
             except Exception as e:
                 socketio.emit("log", {"msg": f"Chart generation error: {e}"})
-            socketio.emit("snapshot", build_snapshot(sim))
+            _write_snapshot()
 
     socketio.emit("status", {"running": False, "paused": False,
                              "epoch": sim.epoch if sim else 0})
@@ -243,6 +281,24 @@ def simulation_worker(cfg: dict):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/snapshot")
+def api_snapshot():
+    """HTTP endpoint: frontend polls this to get latest state.
+    Serves from memory cache (fast), falls back to file."""
+    with _snapshot_lock:
+        snap = _latest_snapshot
+    if snap is not None:
+        return jsonify(snap)
+    # Fallback: read from file
+    if os.path.isfile(SNAPSHOT_FILE):
+        try:
+            with open(SNAPSHOT_FILE, "r", encoding="utf-8") as f:
+                return jsonify(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return jsonify({}), 204
 
 
 @app.route("/report")
@@ -272,8 +328,7 @@ def download_report():
 # ── Socket events ──
 @socketio.on("connect")
 def on_connect():
-    if sim is not None:
-        emit("snapshot", build_snapshot(sim))
+    # No snapshot push — frontend polls /api/snapshot via HTTP
     emit("status", {"running": sim_running, "paused": sim_paused,
                     "epoch": sim.epoch if sim else 0})
     emit("config_defaults", load_config())
@@ -380,8 +435,11 @@ def on_set_view_mode(data):
 
 @socketio.on("request_snapshot")
 def on_request_snapshot():
-    if sim is not None:
-        emit("snapshot", build_snapshot(sim))
+    """Legacy: clients can still request via socket; serves from memory cache."""
+    with _snapshot_lock:
+        snap = _latest_snapshot
+    if snap is not None:
+        emit("snapshot", snap)
 
 
 # ── Main ──
