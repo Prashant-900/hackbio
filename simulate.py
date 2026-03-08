@@ -22,6 +22,18 @@ import numpy as np
 from agent import Bacterium, Genotype, Phase, reset_id_counter
 from environment import Environment
 
+try:
+    from rl_agent import (
+        BacterialAction,
+        BacterialDQN,
+        compute_reward,
+        extract_states_batch,
+    )
+
+    RL_AVAILABLE = True
+except ImportError:
+    RL_AVAILABLE = False
+
 
 class Simulation:
     """Main simulation driver."""
@@ -42,6 +54,12 @@ class Simulation:
         # Cumulative counters (LTEE: mutation accumulation is linear & clock-like)
         self.cumulative_mutations: int = 0
         self.cumulative_hgt: int = 0
+
+        # RL brain (optional)
+        self.dqn: BacterialDQN | None = None
+        rl_cfg = cfg.get("rl", {})
+        if RL_AVAILABLE and rl_cfg.get("enabled", False):
+            self.dqn = BacterialDQN(cfg)
 
         # Seed
         seed = cfg["simulation"].get("seed")
@@ -72,6 +90,7 @@ class Simulation:
             b = Bacterium(
                 x=random.randint(0, w - 1),
                 y=random.randint(0, h - 1),
+                z=random.uniform(0, self.cfg.get("grid", {}).get("z_levels", 10)) if self.cfg.get('_view_mode', '2d') == '3d' else 0.0,
                 genotype=gt,
             )
             b.attach_config(self.cfg)
@@ -118,13 +137,42 @@ class Simulation:
 
         # 2. Agent actions
         new_agents: list[Bacterium] = []
-        pop_size = sum(1 for a in self.agents if a.alive)
+        alive = [a for a in self.agents if a.alive]
+        pop_size = len(alive)
         pre_alive = pop_size
+
+        # RL: batch state extraction & action selection
+        prev_biomasses: dict[int, float] = {}
+        prev_states: dict[int, np.ndarray] = {}
+        rl_actions: np.ndarray | None = None
+        if self.dqn and self.dqn.enabled and alive:
+            states = extract_states_batch(alive, self.env, self.cfg)
+            rl_actions = self.dqn.select_actions_batch(states)
+            for idx, agent in enumerate(alive):
+                prev_biomasses[agent.uid] = agent.biomass
+                prev_states[agent.uid] = states[idx]
+                act = int(rl_actions[idx])
+                agent._rl_action = act
+                # Set RL flags based on action
+                if act == int(BacterialAction.COOPERATE):
+                    agent._rl_cooperate = True
+                elif act == int(BacterialAction.COMPETE):
+                    agent._rl_compete = True
 
         for agent in self.agents:
             if not agent.alive:
                 continue
-            agent.move(self.env)
+            # RL: movement bias from action
+            enable_3d = getattr(self, 'view_mode', '2d') == '3d'
+            if self.dqn and self.dqn.enabled:
+                if agent._rl_action == int(BacterialAction.CHEMOTAXIS_RUN):
+                    agent.move(self.env, run_bias=0.9, enable_3d=enable_3d)
+                elif agent._rl_action == int(BacterialAction.CHEMOTAXIS_TUMBLE):
+                    agent.move(self.env, run_bias=0.1, enable_3d=enable_3d)
+                else:
+                    agent.move(self.env, enable_3d=enable_3d)
+            else:
+                agent.move(self.env, enable_3d=enable_3d)
             daughter = agent.step(self.env, pop_size)
             if daughter is not None:
                 new_agents.append(daughter)
@@ -135,6 +183,51 @@ class Simulation:
                 self.deaths_this_epoch += 1
 
         self.agents.extend(new_agents)
+
+        # RL: compute rewards and store transitions
+        if self.dqn and self.dqn.enabled and prev_states:
+            # Build uid→agent lookup for O(1) access
+            uid_to_agent = {a.uid: a for a in self.agents}
+            # Track which parents produced daughters
+            parent_uids = {d.uid for d in new_agents} if new_agents else set()
+            # Build uid→action map from the pre-step rl_actions
+            uid_to_action: dict[int, int] = {}
+            for idx, a in enumerate(alive):
+                if rl_actions is not None:
+                    uid_to_action[a.uid] = int(rl_actions[idx])
+
+            for uid, prev_state in prev_states.items():
+                bact = uid_to_agent.get(uid)
+                act = uid_to_action.get(uid, 6)
+                if bact is None:
+                    # fully removed (shouldn't happen before dead cleanup)
+                    self.dqn.store(
+                        prev_state, act, -10.0,
+                        np.zeros(14, dtype=np.float32), True,
+                    )
+                    continue
+                divided = any(
+                    d for d in new_agents
+                    if d.x in range(max(0, bact.x - 1), bact.x + 2)
+                    and d.y in range(max(0, bact.y - 1), bact.y + 2)
+                ) if new_agents else False
+                reward = compute_reward(
+                    bact, prev_biomasses.get(uid, bact.biomass),
+                    divided, bact.alive,
+                )
+                if bact.alive:
+                    from rl_agent import extract_state
+                    next_state = extract_state(bact, self.env, self.cfg)
+                else:
+                    next_state = np.zeros(14, dtype=np.float32)
+                self.dqn.store(
+                    prev_state, act,
+                    reward, next_state, not bact.alive,
+                )
+
+            # Train DQN periodically
+            if self.epoch % self.dqn.train_every == 0:
+                self.dqn.train_step()
 
         # 3. HGT (every 5 epochs, sampled for performance)
         if self.epoch % 5 == 0:

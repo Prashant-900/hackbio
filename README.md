@@ -8,7 +8,7 @@ A spatially-explicit agent-based simulation of bacterial colony growth, evolutio
 
 ## What It Does
 
-Hundreds of individual bacteria live on a 2D grid. Each one grows, moves, divides, mutates, cooperates, competes, and dies — all governed by real microbiology equations. An antibiotic front sweeps in from one edge; the colony must evolve resistance or perish.
+Hundreds of individual bacteria live on a 2D grid with 3D colony depth. Each one grows, moves, divides, mutates, cooperates, competes, and dies — all governed by real microbiology equations. A **Deep Q-Network (DQN)** acts as a shared "bacterial brain," learning optimal survival strategies from pooled experience. An antibiotic front sweeps in from one edge; the colony must evolve resistance or perish.
 
 The simulation models:
 
@@ -21,6 +21,139 @@ The simulation models:
 - **Horizontal gene transfer** — one-way conjugative plasmid transfer (donor → recipient, Frost et al. 2005)
 - **Natural selection** — multi-trait fitness landscape
 - **Chemotaxis** — run-and-tumble on full Moore neighbourhood (8 directions + stay)
+- **Reinforcement Learning** — Double DQN with experience replay; 14-dim state, 7 discrete actions
+- **3D Colony Structure** — z-coordinate depth per bacterium (biofilm layering)
+- **Physics** — Cardinal temperature, pH, and pressure growth models (Rosso et al. 1993, 1995)
+- **GPU Acceleration** — PyTorch CUDA/MPS for batch RL inference
+- **Mesa Framework** — `BacterialColonyModel` wrapper with `DataCollector` for batch analysis
+
+---
+
+## Reinforcement Learning — Double DQN
+
+A shared Deep Q-Network learns survival strategies that bacteria would evolve over millions of years, compressed into hundreds of training epochs.
+
+### Architecture
+
+- **Double DQN** with experience replay (Mnih et al. 2015; van Hasselt et al. 2016)
+- **One shared brain** trained from all bacteria's pooled experience — computationally tractable even with 10,000+ agents
+- **GPU-accelerated** batch inference via PyTorch (CUDA / MPS / CPU fallback)
+
+### State Space (14 dimensions)
+
+| Dim | Feature | Normalization |
+|-----|---------|---------------|
+| 0 | Local resource | S / S_max |
+| 1 | Local antibiotic | AB / AB_max |
+| 2 | Foreign toxin | toxin / 5.0 |
+| 3 | QS signal | signal / 2.0 |
+| 4 | Biofilm density | biofilm / 5.0 |
+| 5 | Biomass | biomass / 3.0 |
+| 6 | Age fraction | age / max_age |
+| 7 | Growth phase | phase_int / 3 |
+| 8 | Resistance | [0, 1] |
+| 9 | Fitness | [0, 1] |
+| 10 | Temperature | (T - 10) / 35 |
+| 11 | Pressure | (P - 0.5) / 5 |
+| 12 | z-depth | z / z_levels |
+| 13 | Biofilm member | 0 or 1 |
+
+### Action Space (7 discrete)
+
+| Action | Effect |
+|--------|--------|
+| CHEMOTAXIS_RUN | Biased move toward nutrient gradient (run_bias=0.9) |
+| CHEMOTAXIS_TUMBLE | Random direction move (run_bias=0.1) |
+| COOPERATE | Double EPS biofilm secretion |
+| COMPETE | Double bacteriocin production |
+| CONJUGATE | Attempt HGT with neighbour |
+| CONSERVE | Halve growth rate to save energy |
+| GROW | Default metabolic behaviour |
+
+### Reward Function
+
+$$R = +0.1_{\text{alive}} + 2 \cdot \Delta m_{\text{biomass}} + 5_{\text{division}} + 0.3_{\text{biofilm}} - 10_{\text{death}}$$
+
+### Network
+
+```
+Input(14) → Linear(128) → ReLU → Linear(64) → ReLU → Linear(7)
+```
+
+Soft target-network updates (τ = 0.005), epsilon-greedy exploration (1.0 → 0.05), gradient clipping at 1.0.
+
+---
+
+## 3D Colony Structure
+
+Bacteria have a z-coordinate representing depth in the colony:
+- Daughters inherit parent's z ± noise, clamped to [0, z_levels]
+- Deeper bacteria have **reduced nutrient access** (factor: 1 − 0.3 · z/z_levels)
+- Surface bacteria face more antibiotic exposure
+- The 3D structure is visualized as a Plotly scatter3d chart in the dashboard
+
+---
+
+## Physics — Cardinal Growth Models
+
+Three environmental factors modulate growth rate multiplicatively:
+
+$$\text{growth\_modifier} = f_T(T) \times f_{\text{pH}}(\text{pH}) \times f_P(P)$$
+
+### Cardinal Temperature Model (Rosso et al. 1993)
+
+$$f_T = \frac{(T - T_{\max})(T - T_{\min})^2}{(T_{\text{opt}} - T_{\min})[(T_{\text{opt}} - T_{\min})(T - T_{\text{opt}}) - (T_{\text{opt}} - T_{\max})(T_{\text{opt}} + T_{\min} - 2T)]}$$
+
+| Parameter | Default | Unit |
+|-----------|---------|------|
+| T_min | 10 | °C |
+| T_opt | 37 | °C |
+| T_max | 45 | °C |
+
+### Cardinal pH Model (Rosso et al. 1995)
+
+$$f_{\text{pH}} = \frac{(\text{pH} - \text{pH}_{\min})(\text{pH} - \text{pH}_{\max})}{(\text{pH} - \text{pH}_{\min})(\text{pH} - \text{pH}_{\max}) - (\text{pH} - \text{pH}_{\text{opt}})^2}$$
+
+Range: pH 4 – 9, optimal at 7.0.
+
+### Pressure Model (Abe & Horikoshi 2001)
+
+$$f_P = \max(0,\; 1 - (P - 1) / 500)$$
+
+Growth declines linearly above 1 atm; full inhibition at ~500 atm.
+
+All three factors can be adjusted in real time via the dashboard Settings panel.
+
+---
+
+## GPU Acceleration
+
+- Auto-detects **NVIDIA CUDA**, **Apple MPS**, or falls back to **CPU**
+- Dashboard shows GPU badge with device name and memory
+- "Force CPU" toggle in settings to override GPU detection
+- Batch inference: all alive bacteria's states are extracted as a single numpy array, converted to a torch tensor, and processed on GPU in one forward pass
+
+---
+
+## Mesa Framework Integration
+
+`mesa_model.py` provides a `BacterialColonyModel(mesa.Model)` wrapper:
+
+```python
+from mesa_model import BacterialColonyModel
+import yaml
+
+cfg = yaml.safe_load(open('config.yaml'))
+model = BacterialColonyModel(cfg)
+for _ in range(200):
+    model.step()
+
+# Mesa DataCollector gives a clean pandas DataFrame
+df = model.datacollector.get_model_vars_dataframe()
+print(df[['Population', 'MeanFitness', 'CooperationIndex']].tail())
+```
+
+12 model reporters: Population, MeanFitness, MeanResistance, CooperationIndex, CompetitionIndex, BiofilmFraction, ResourceConcentration, MutationFrequency, CumulativeMutations, CumulativeHGT, MeanAntibiotic, Epoch.
 
 ---
 
@@ -158,17 +291,20 @@ All parameters live in [`config.yaml`](config.yaml). Key settings for the defaul
 ## Project Structure
 
 ```
-├── config.yaml        # All simulation parameters
-├── environment.py     # 2D grids: resource, antibiotic, signal, biofilm, toxin
-├── agent.py           # Bacterium agent: growth, death, mutation, HGT
-├── simulate.py        # Epoch loop, metrics collection, CSV export
+├── config.yaml        # All simulation parameters (physics, RL, grid, biology)
+├── environment.py     # 2D grids + physics growth modifiers
+├── agent.py           # Bacterium agent: growth, death, mutation, HGT, RL actions, z-depth
+├── simulate.py        # Epoch loop, DQN integration, metrics collection, CSV export
+├── rl_agent.py        # Double DQN: network, replay buffer, state/action/reward
+├── gpu_utils.py       # CUDA/MPS/CPU device detection
+├── mesa_model.py      # Mesa Model wrapper with DataCollector
 ├── visualize.py       # 15 matplotlib/seaborn charts
 ├── dashboard.py       # Flask + SocketIO live dashboard server
 ├── main.py            # CLI entry point
 ├── templates/
-│   └── index.html     # Interactive dashboard UI (Canvas + Plotly)
+│   └── index.html     # Interactive dashboard UI (Canvas + Plotly + 3D)
 ├── Dockerfile         # Container deployment
-├── requirements.txt   # Python dependencies
+├── requirements.txt   # Python dependencies (numpy, scipy, torch, mesa, flask...)
 └── TEAM.txt           # Team info
 ```
 
@@ -230,11 +366,17 @@ docker run -p 5000:5000 hackbio
 ## Live Dashboard Features
 
 - **2D Canvas world** — zoom, pan, hover over individual bacteria
-- **Real-time stats** — population, fitness, resistance, cooperation
+- **3D Colony chart** — Plotly scatter3d showing colony depth structure
+- **Real-time stats** — population, fitness, resistance, cooperation, growth modifier
+- **RL stats panel** — epsilon, loss, buffer size, device (GPU/CPU)
+- **GPU indicator** — auto-detected GPU badge in topbar
 - **Layer toggles** — resource, antibiotic, biofilm, signal overlays
-- **8 live charts** — population, genotypes, phases, demographics, fitness
+- **11 live charts** — population, genotypes, phases, demographics, fitness, 3D colony
+- **Physics controls** — temperature, pressure, pH sliders in settings
+- **RL controls** — enable/disable RL brain, force CPU toggle
 - **Settings panel** — adjust grid size, epochs, mutation rate, antibiotic mode
 - **Speed control** — adjust simulation delay per epoch
+- **Report download** — ZIP with 15 PNGs + CSV + config.yaml
 
 ---
 
@@ -257,3 +399,9 @@ Computational Biology / Agent-Based Modeling Track
 - Fuqua WC et al. (1994). *Quorum sensing in bacteria: the LuxR-LuxI family*. J. Bacteriol.
 - Frost LS et al. (2005). *Mobile genetic elements: the agents of open source evolution*. Nat. Rev. Microbiol. — One-way conjugative HGT.
 - Fisher RA (1930). *The Genetical Theory of Natural Selection*.
+- Mnih V et al. (2015). *Human-level control through deep reinforcement learning*. Nature.
+- van Hasselt H et al. (2016). *Deep Reinforcement Learning with Double Q-learning*. AAAI.
+- Rosso L et al. (1993). *An unexpected correlation between cardinal temperatures of microbial growth*. J. Theor. Biol.
+- Rosso L et al. (1995). *Convenient model to describe the combined effects of temperature and pH on microbial growth*. Appl. Environ. Microbiol.
+- Abe F, Horikoshi K (2001). *The biotechnological potential of piezophiles*. Trends Biotechnol.
+- Kazil J et al. (2020). *Utilizing Python for Agent-Based Modeling: The Mesa Framework*. JASSS.

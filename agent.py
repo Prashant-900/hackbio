@@ -83,6 +83,7 @@ class Bacterium:
     uid: int = field(default_factory=_new_id)
     x: int = 0
     y: int = 0
+    z: float = 0.0                    # depth in 3D colony (0 = surface)
     age: int = 0
     biomass: float = 0.5
     phase: Phase = Phase.LAG
@@ -91,6 +92,11 @@ class Bacterium:
     biofilm_member: bool = False
     fitness: float = 0.0          # computed each epoch
     mutated_this_division: bool = False  # track for mutation_frequency metric
+
+    # RL action flags (set externally by DQN before step)
+    _rl_action: int = 6           # default = GROW
+    _rl_cooperate: bool = False
+    _rl_compete: bool = False
 
     _cfg: dict = field(default_factory=dict, repr=False)
     _carrying_ratio: float = field(default=0.5, repr=False)
@@ -188,6 +194,17 @@ class Bacterium:
             if self.phase == Phase.STATIONARY:
                 growth *= 0.1
 
+            # Physics: environment growth modifier (temperature × pH × pressure)
+            growth *= env.growth_modifier
+
+            # 3D depth modifier — deeper bacteria have reduced nutrient access
+            z_depth = self.z / max(getattr(env, 'z_levels', 10), 1)
+            growth *= (1.0 - 0.3 * z_depth)
+
+            # RL: CONSERVE action halves growth
+            if self._rl_action == 5:  # CONSERVE
+                growth *= 0.5
+
             yld = self._cfg["monod"]["yield_coefficient"]  # Y_{X/S}
             substrate_needed = growth / yld if yld > 0 else growth
             consumed = env.consume_resource(self.x, self.y, substrate_needed)
@@ -208,7 +225,8 @@ class Bacterium:
 
         # ── Cooperation: EPS biofilm production (at metabolic cost) ──
         if self.biofilm_member and self.phase in (Phase.LOG, Phase.STATIONARY):
-            eps_amount = self.genotype.public_good_production * 0.1
+            eps_mult = 2.0 if self._rl_cooperate else 1.0
+            eps_amount = self.genotype.public_good_production * 0.1 * eps_mult
             cost = eps_amount * self._cfg["bacterium"]["public_good_cost"]
             if self.biomass > cost:
                 self.biomass -= cost
@@ -229,7 +247,8 @@ class Bacterium:
 
         # ── Competition: bacteriocin secretion (at metabolic cost) ──
         tox_cfg = self._cfg["toxin"]
-        tox_amount = tox_cfg["secretion_rate"] * self.genotype.toxin_production
+        tox_mult = 2.0 if self._rl_compete else 1.0
+        tox_amount = tox_cfg["secretion_rate"] * self.genotype.toxin_production * tox_mult
         tox_cost = tox_amount * self._cfg["bacterium"]["toxin_production_cost"]
         if self.biomass > tox_cost and self.phase in (Phase.LOG, Phase.STATIONARY):
             self.biomass -= tox_cost
@@ -238,6 +257,11 @@ class Bacterium:
         # ── Death check ──
         if self._death_check(env):
             self.alive = False
+
+        # Reset RL flags for next epoch
+        self._rl_action = 6
+        self._rl_cooperate = False
+        self._rl_compete = False
 
         return daughter
 
@@ -263,10 +287,16 @@ class Bacterium:
         nx = max(0, min(env.width - 1, self.x + dx))
         ny = max(0, min(env.height - 1, self.y + dy))
 
+        # In 2D mode z stays 0; in 3D mode daughter drifts in z
+        is_3d = self._cfg.get('_view_mode', '2d') == '3d'
+        child_z = self.z + random.uniform(-0.5, 0.5) if is_3d else 0.0
         daughter = Bacterium(
-            x=nx, y=ny, age=0, biomass=self.biomass,
+            x=nx, y=ny, z=child_z,
+            age=0, biomass=self.biomass,
             phase=Phase.LAG, genotype=child_genotype,
         )
+        if is_3d:
+            daughter.z = max(0.0, min(float(self._cfg.get('grid', {}).get('z_levels', 10)), daughter.z))
         daughter.mutated_this_division = mutated
         daughter.attach_config(self._cfg)
         env.ensure_genotype_toxin_grid(child_genotype.id)
@@ -390,17 +420,17 @@ class Bacterium:
     # ──────────────────────────────────────────────────────────
     # Chemotaxis-inspired movement
     # ──────────────────────────────────────────────────────────
-    def move(self, env: "Environment") -> None:
+    def move(self, env: "Environment", run_bias: float = 0.6, enable_3d: bool = False) -> None:
         """Biased random walk toward higher resource (chemotaxis).
 
         Models the *run-and-tumble* motility of E. coli:
-          - 60 % of moves are *biased* (run toward the steepest
-            nutrient gradient in the Moore neighbourhood).
-          - 40 % of moves are random *tumbles* (uniform random
-            direction) — prevents the cell from getting stuck in
-            local optima, as observed in real chemotaxis.
+          - run_bias fraction of moves are *biased* (run toward the
+            steepest nutrient gradient in the Moore neighbourhood).
+          - (1 - run_bias) moves are random *tumbles*.
         Includes all 8 neighbour directions (Moore neighbourhood)
         plus staying in place.
+
+        When enable_3d is True, bacteria also move along the z-axis.
         """
         if self.phase not in (Phase.LOG, Phase.STATIONARY):
             return
@@ -414,7 +444,7 @@ class Bacterium:
             (0, 0),
         ]
 
-        if random.random() < 0.6:  # biased run
+        if random.random() < run_bias:  # biased run
             for dx, dy in directions:
                 nx = max(0, min(env.width - 1, self.x + dx))
                 ny = max(0, min(env.height - 1, self.y + dy))
@@ -427,3 +457,12 @@ class Bacterium:
 
         self.x = max(0, min(env.width - 1, self.x + best_dx))
         self.y = max(0, min(env.height - 1, self.y + best_dy))
+
+        # 3D z-axis movement when in 3D mode
+        if enable_3d:
+            z_levels = getattr(env, 'z_levels', self._cfg.get('grid', {}).get('z_levels', 10))
+            dz = random.choice([-1, 0, 0, 0, 1])  # mostly stay, sometimes drift
+            # Bias toward surface (z=0) where nutrients are richer
+            if self.z > z_levels * 0.5 and random.random() < 0.3:
+                dz = -1
+            self.z = max(0.0, min(float(z_levels), self.z + dz))

@@ -81,6 +81,14 @@ class Environment:
         self.toxin_diffusion: float = tox_cfg["diffusion_rate"]
         self.toxin_decay: float = tox_cfg["decay_rate"]
 
+        # ── Physics (Cardinal models — Rosso et al. 1993, 1995) ──
+        physics = cfg.get("physics", {})
+        self.temperature: float = physics.get("temperature", 37.0)
+        self.pressure_atm: float = physics.get("pressure_atm", 1.0)
+        self.ph: float = physics.get("ph", 7.0)
+        self.z_levels: int = cfg.get("grid", {}).get("z_levels", 10)
+        self.growth_modifier: float = 1.0  # recomputed each step()
+
     # ──────────────────────────────────────────────────────────────
     # Diffusion (Fick's 2nd law, discretised)
     # ──────────────────────────────────────────────────────────────
@@ -94,6 +102,11 @@ class Environment:
     # Per-epoch environmental update
     # ──────────────────────────────────────────────────────────────
     def step(self, epoch: int) -> None:
+        self.growth_modifier = (
+            self.temperature_growth_factor(self.temperature)
+            * self.ph_growth_factor(self.ph)
+            * self.pressure_growth_factor(self.pressure_atm)
+        )
         self._update_resources()
         self._update_antibiotic(epoch)
         self._update_signal()
@@ -197,6 +210,62 @@ class Environment:
     def get_total_toxin_at(self, x: int, y: int) -> float:
         return sum(grid[y, x] for grid in self.toxin_grids.values())
 
+    def ensure_genotype_toxin_grid(self, genotype_id: int) -> None:
+        if genotype_id not in self.toxin_grids:
+            self.toxin_grids[genotype_id] = np.zeros(self.shape, dtype=np.float64)
+
+    def cleanup_toxin_grids(self, active_genotypes: set[int]) -> None:
+        for g in list(self.toxin_grids):
+            if g not in active_genotypes:
+                del self.toxin_grids[g]
+
+    # ──────────────────────────────────────────────────────────────
+    # Physics growth-factor models
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def temperature_growth_factor(
+        T: float, T_min: float = 10.0, T_opt: float = 37.0, T_max: float = 45.0
+    ) -> float:
+        """Cardinal Temperature Model with Inflection (Rosso et al. 1993).
+
+        Returns a factor in [0, 1].  At T_opt the factor is 1.0;
+        at T ≤ T_min or T ≥ T_max the factor is 0.0.
+        """
+        if T <= T_min or T >= T_max:
+            return 0.0
+        num = (T - T_max) * (T - T_min) ** 2
+        den = (T_opt - T_min) * (
+            (T_opt - T_min) * (T - T_opt)
+            - (T_opt - T_max) * (T_opt + T_min - 2 * T)
+        )
+        return max(0.0, min(1.0, num / den))
+
+    @staticmethod
+    def ph_growth_factor(
+        pH: float, pH_min: float = 4.0, pH_opt: float = 7.0, pH_max: float = 9.0
+    ) -> float:
+        """Cardinal pH Model (Rosso et al. 1995).
+
+        Analogous to the CTMI but for pH.  Factor = 1 at pH_opt.
+        """
+        if pH <= pH_min or pH >= pH_max:
+            return 0.0
+        denom = (pH - pH_min) * (pH - pH_max) - (pH - pH_opt) ** 2
+        if abs(denom) < 1e-12:
+            return 0.0
+        return max(0.0, min(1.0, ((pH - pH_min) * (pH - pH_max)) / denom))
+
+    @staticmethod
+    def pressure_growth_factor(P_atm: float) -> float:
+        """Pressure effect on E. coli growth (Abe & Horikoshi 2001).
+
+        Growth rate declines linearly above 1 atm.  Full inhibition
+        at ~500 atm (deep-sea pressures).
+        """
+        if P_atm <= 1.0:
+            return 1.0
+        return max(0.0, 1.0 - (P_atm - 1.0) / 500.0)
+
     def mean_resource(self) -> float:
         return float(np.mean(self.resource))
 
@@ -209,11 +278,4 @@ class Environment:
     def mean_biofilm(self) -> float:
         return float(np.mean(self.biofilm))
 
-    def ensure_genotype_toxin_grid(self, genotype: int) -> None:
-        if genotype not in self.toxin_grids:
-            self.toxin_grids[genotype] = np.zeros(self.shape, dtype=np.float64)
 
-    def cleanup_toxin_grids(self, active_genotypes: set[int]) -> None:
-        for g in list(self.toxin_grids.keys()):
-            if g not in active_genotypes:
-                del self.toxin_grids[g]

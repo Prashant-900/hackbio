@@ -31,6 +31,7 @@
 grid:
   width: 200
   height: 200
+  z_levels: 10                      # vertical depth layers in 3D colony
 
 resource:
   scenario: "resource-rich"        # "resource-rich" | "resource-depleted"
@@ -111,6 +112,27 @@ fitness:
   weight_resistance: 0.3
   weight_efficiency: 0.2
   weight_cooperation: 0.1
+
+# --- Physics (Cardinal models — Rosso et al. 1993, 1995) ---
+physics:
+  temperature: 37.0                  # °C — E. coli optimal (Cardinal range 10–45)
+  pressure_atm: 1.0                  # atmospheric pressure (growth declines >1 atm)
+  ph: 7.0                            # pH — E. coli optimal 6.5–7.5 (range 4–9)
+
+# --- Reinforcement Learning (Double DQN) ---
+rl:
+  enabled: true                      # toggle RL brain (false = heuristic only)
+  gamma: 0.99                        # discount factor
+  epsilon_start: 1.0                 # initial exploration rate
+  epsilon_min: 0.05                  # minimum exploration rate
+  epsilon_decay: 0.995               # per-training-step decay
+  batch_size: 64                     # replay buffer sample size
+  buffer_size: 50000                 # max replay transitions stored
+  learning_rate: 0.001               # Adam optimiser LR
+  target_update_freq: 10             # steps between target-net soft updates
+  tau: 0.005                         # soft update coefficient
+  train_every: 5                     # epochs between DQN training steps
+  force_cpu: false                   # true = ignore GPU even if available
 
 # --- Simulation ---
 simulation:

@@ -57,6 +57,18 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 #layersPanel label:hover{color:var(--text)}
 #layersPanel input{accent-color:var(--accent)}
 
+/* ─ 3D Gizmo ─ */
+#gizmo3d{position:absolute;top:8px;right:8px;z-index:35;display:none;background:#252526;border:1px solid #3c3c3c;padding:4px;border-radius:2px}
+#gizmo3d .gizmo-grid{display:grid;grid-template-columns:repeat(3,28px);grid-template-rows:repeat(3,28px);gap:2px}
+#gizmo3d button{width:28px;height:28px;border:none;border-radius:2px;cursor:pointer;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;transition:background .1s}
+#gizmo3d button:hover{filter:brightness(1.3)}
+#gizmo3d .gx{background:rgba(209,105,105,.35);color:#f06}
+#gizmo3d .gy{background:rgba(96,139,78,.35);color:#6c6}
+#gizmo3d .gz{background:rgba(86,156,214,.35);color:#69f}
+#gizmo3d .gn{background:rgba(255,255,255,.05);color:var(--muted)}
+#gizmo3d .gp{background:rgba(255,255,255,.08);color:var(--text)}
+.gizmo-label{font-size:9px;color:var(--muted);text-align:center;margin-bottom:2px;letter-spacing:.5px}
+
 /* ─ Bottom bar ─ */
 .bottombar{height:36px;background:#007acc;border-top:none;display:flex;align-items:center;gap:12px;padding:0 10px;z-index:50}
 .bottombar .controls{display:flex;gap:2px}
@@ -121,7 +133,9 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
   <span class="logo"><b>Bacterial Colony</b> ABM</span>
   <div style="display:flex;align-items:center;gap:12px">
     <span class="status s-idle" id="statusBadge">idle</span>
+    <span id="gpuBadge" style="font-size:10px;padding:2px 8px;border-radius:2px;background:rgba(96,139,78,.25);color:#89d185;display:none;cursor:help">GPU</span>
     <div class="actions">
+      <button id="btnViewMode" onclick="toggleViewMode()" title="Switch between 2D and 3D view">2D</button>
       <button onclick="openModal('charts')">Charts</button>
       <button onclick="openModal('settings')">Settings</button>
       <button id="btnReport" onclick="downloadReport()" style="opacity:.4;pointer-events:none" title="Available after simulation completes">⬇ Report</button>
@@ -132,7 +146,24 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 <!-- ═══ WORLD ═══ -->
 <div class="world-wrap" id="worldWrap">
   <canvas id="world"></canvas>
+  <div id="world3d" style="display:none;width:100%;height:100%;position:absolute;top:0;left:0"></div>
   <div id="tooltip"></div>
+
+  <!-- 3D Navigation Gizmo -->
+  <div id="gizmo3d">
+    <div class="gizmo-label">View</div>
+    <div class="gizmo-grid">
+      <button class="gn" onclick="gizmoView('top')" title="Top">T</button>
+      <button class="gy" onclick="gizmoView('front')" title="Front (+Y)">+Y</button>
+      <button class="gn" onclick="gizmoView('iso')" title="Isometric">3D</button>
+      <button class="gx" onclick="gizmoView('left')" title="Left (-X)">-X</button>
+      <button class="gp" onclick="gizmoView('home')" title="Reset">⌂</button>
+      <button class="gx" onclick="gizmoView('right')" title="Right (+X)">+X</button>
+      <button class="gn" onclick="gizmoView('bottom')" title="Bottom">B</button>
+      <button class="gy" onclick="gizmoView('back')" title="Back (-Y)">-Y</button>
+      <button class="gz" onclick="gizmoView('zAxis')" title="Along Z">Z</button>
+    </div>
+  </div>
 
   <!-- Stats -->
   <div id="statsPanel">
@@ -151,9 +182,16 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
       <div class="sp-row"><span class="k">Σ Mutations</span><span class="v" id="sCumMut">0</span></div>
       <div class="sp-row"><span class="k">Σ HGT</span><span class="v" id="sCumHGT">0</span></div>
       <div class="sp-row"><span class="k">Res Consumed</span><span class="v" id="sResCon">—</span></div>
+      <div class="sp-row"><span class="k">Growth Mod</span><span class="v" id="sGrowthMod">—</span></div>
       <div class="sp-row"><span class="k">Divisions</span><span class="v" id="sDiv">0</span></div>
       <div class="sp-row"><span class="k">Deaths</span><span class="v" id="sDth">0</span></div>
       <div class="sp-row"><span class="k">Genotypes</span><span class="v" id="sGen">—</span></div>
+      <div id="rlStatsBlock" style="display:none;border-top:1px solid #444;margin-top:4px;padding-top:4px">
+        <div class="sp-row"><span class="k" style="color:#4ec9b0">RL Device</span><span class="v" id="sRLDev">—</span></div>
+        <div class="sp-row"><span class="k" style="color:#4ec9b0">RL Epsilon</span><span class="v" id="sRLEps">—</span></div>
+        <div class="sp-row"><span class="k" style="color:#4ec9b0">RL Loss</span><span class="v" id="sRLLoss">—</span></div>
+        <div class="sp-row"><span class="k" style="color:#4ec9b0">RL Buffer</span><span class="v" id="sRLBuf">—</span></div>
+      </div>
     </div>
   </div>
 
@@ -216,6 +254,18 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
         <div class="form-group"><label>Random Seed</label><input type="text" id="cfgSeed" value="42" placeholder="blank = random"/></div>
         <div class="form-group"><label>Grid Width</label><input type="number" id="cfgGridW" value="200" min="20" max="500"/></div>
         <div class="form-group"><label>Grid Height</label><input type="number" id="cfgGridH" value="200" min="20" max="500"/></div>
+        <div class="form-group"><label>Z Height (3D layers)</label><input type="number" id="cfgZLevels" value="10" min="1" max="50"/></div>
+      </div>
+      <h3 style="margin:16px 0 8px;font-size:12px;color:var(--muted);font-weight:400">Physics (Cardinal Models)</h3>
+      <div class="form-grid">
+        <div class="form-group"><label>Temperature (°C) — range 10–45</label><input type="number" id="cfgTemp" value="37" min="10" max="45" step="0.5"/></div>
+        <div class="form-group"><label>Pressure (atm)</label><input type="number" id="cfgPressure" value="1.0" min="0.5" max="500" step="0.1"/></div>
+        <div class="form-group"><label>pH — range 4–9</label><input type="number" id="cfgPH" value="7.0" min="4" max="9" step="0.1"/></div>
+      </div>
+      <h3 style="margin:16px 0 8px;font-size:12px;color:var(--muted);font-weight:400">Reinforcement Learning (DQN)</h3>
+      <div class="form-grid">
+        <div class="form-group"><label><input type="checkbox" id="cfgRLEnabled" checked style="accent-color:var(--accent);margin-right:4px"> Enable RL Brain</label></div>
+        <div class="form-group"><label><input type="checkbox" id="cfgForceCPU" style="accent-color:var(--accent);margin-right:4px"> Force CPU (ignore GPU)</label></div>
       </div>
       <div class="form-footer">
         <button class="btn-primary" onclick="startFromSettings()">Start Simulation</button>
@@ -537,7 +587,9 @@ function _renderFrame(){
 }
 
 // Layer toggles trigger re-render
-document.querySelectorAll('#layersPanel input').forEach(el => el.addEventListener('change', render));
+document.querySelectorAll('#layersPanel input').forEach(el => el.addEventListener('change', ()=>{
+  if(viewMode==='3d') render3D(); else render();
+}));
 
 // ─── Stats ───
 function toggleStats(){
@@ -563,9 +615,18 @@ function updateStats(d){
   document.getElementById('sCumHGT').textContent = chArr.length ? chArr[chArr.length-1].toLocaleString() : '0';
   const rcArr = d.ts_resource_consumed || [];
   document.getElementById('sResCon').textContent = rcArr.length ? Math.round(rcArr[rcArr.length-1]).toLocaleString() : '—';
+  document.getElementById('sGrowthMod').textContent = d.growth_modifier != null ? d.growth_modifier : '—';
   document.getElementById('sDiv').textContent = d.divisions;
   document.getElementById('sDth').textContent = d.deaths;
   document.getElementById('sGen').textContent = Object.keys(d.genotype_counts || {}).length;
+  // RL stats
+  if(d.rl_stats){
+    document.getElementById('rlStatsBlock').style.display='block';
+    document.getElementById('sRLDev').textContent=d.rl_stats.device||'—';
+    document.getElementById('sRLEps').textContent=d.rl_stats.epsilon;
+    document.getElementById('sRLLoss').textContent=d.rl_stats.avg_loss;
+    document.getElementById('sRLBuf').textContent=d.rl_stats.buffer_size;
+  } else { document.getElementById('rlStatsBlock').style.display='none'; }
   document.getElementById('epochNum').textContent = d.epoch;
   document.getElementById('epochDenom').textContent = '/ ' + d.total_epochs;
   const pct = d.total_epochs > 0 ? (d.epoch / d.total_epochs * 100) : 0;
@@ -607,6 +668,262 @@ function updateCharts(d){
   Plotly.react('cResCon',[{x:ep,y:d.ts_resource_consumed||[],name:'Total Consumed',fill:'tozeroy',line:{color:'#608b4e',width:2},fillcolor:'rgba(96,139,78,.15)'}],{...DL,yaxis:{...DL.yaxis,title:'Resource Units'}});
 }
 
+// ─── 3D View Mode ───
+let viewMode = '2d'; // '2d' | '3d'
+let world3dInit = false;
+let _camera3d = null; // persisted camera state
+
+function toggleViewMode(){
+  // Can only toggle before simulation starts
+  if(simState !== 'idle'){
+    return;
+  }
+  viewMode = viewMode === '2d' ? '3d' : '2d';
+  const btn = document.getElementById('btnViewMode');
+  const c = document.getElementById('world');
+  const d3 = document.getElementById('world3d');
+  const gizmo = document.getElementById('gizmo3d');
+  btn.textContent = viewMode.toUpperCase();
+  if(viewMode === '3d'){
+    c.style.display = 'none';
+    d3.style.display = 'block';
+    gizmo.style.display = 'block';
+    render3D();
+  } else {
+    c.style.display = 'block';
+    d3.style.display = 'none';
+    gizmo.style.display = 'none';
+    render();
+  }
+}
+
+// Capture camera on user interaction so we can preserve it across updates
+function _hookCameraRelay(){
+  const el = document.getElementById('world3d');
+  el.on('plotly_relayout', function(ed){
+    if(ed['scene.camera']) _camera3d = ed['scene.camera'];
+    else {
+      // Plotly sometimes flattens keys
+      const cam = {};
+      let found = false;
+      for(const k of Object.keys(ed)){
+        if(k.startsWith('scene.camera.')){
+          const sub = k.replace('scene.camera.','');
+          const parts = sub.split('.');
+          let obj = cam;
+          for(let i=0;i<parts.length-1;i++){ if(!obj[parts[i]]) obj[parts[i]]={}; obj=obj[parts[i]]; }
+          obj[parts[parts.length-1]] = ed[k];
+          found = true;
+        }
+      }
+      if(found) _camera3d = cam;
+    }
+  });
+}
+
+// ─── 3D Gizmo views ───
+const GIZMO_VIEWS = {
+  front:  {eye:{x:0,y:-2.2,z:0.3}, up:{x:0,y:0,z:1}},
+  back:   {eye:{x:0,y:2.2,z:0.3}, up:{x:0,y:0,z:1}},
+  left:   {eye:{x:-2.2,y:0,z:0.3}, up:{x:0,y:0,z:1}},
+  right:  {eye:{x:2.2,y:0,z:0.3}, up:{x:0,y:0,z:1}},
+  top:    {eye:{x:0,y:0,z:2.5}, up:{x:0,y:1,z:0}},
+  bottom: {eye:{x:0,y:0,z:-2.5}, up:{x:0,y:-1,z:0}},
+  iso:    {eye:{x:1.5,y:-1.5,z:1.2}, up:{x:0,y:0,z:1}},
+  zAxis:  {eye:{x:0.01,y:-0.01,z:2.5}, up:{x:0,y:1,z:0}},
+  home:   {eye:{x:1.25,y:1.25,z:1.25}, up:{x:0,y:0,z:1}},
+};
+function gizmoView(name){
+  const v = GIZMO_VIEWS[name];
+  if(!v) return;
+  _camera3d = {eye:v.eye, up:v.up, center:{x:0,y:0,z:0}};
+  Plotly.relayout('world3d',{'scene.camera': _camera3d});
+}
+
+function render3D(){
+  if(!snapshot) return;
+  const traces = [];
+
+  // === Bacteria scatter ===
+  if(snapshot.bacteria && snapshot.bacteria.length){
+    const bx=[], by=[], bz=[], bc=[], bsz=[], bt=[];
+    for(const b of snapshot.bacteria){
+      bx.push(b[0]); by.push(b[1]); bz.push(b[12]||0);
+      bc.push(GC[b[2]%GC.length]);
+      // Size by biomass (clamped)
+      bsz.push(Math.max(2, Math.min(6, b[5]*4)));
+      // Rich hover text matching 2D tooltip
+      bt.push(
+        '<b style="color:'+GC[b[2]%GC.length]+'">Genotype '+b[2]+'</b><br>'
+        +'Phase: '+PHASE_NAMES[b[3]]+'<br>'
+        +'Fitness: '+b[4]+'<br>'
+        +'Biomass: '+b[5]+'<br>'
+        +'Resistance: '+b[6]+'<br>'
+        +'Efficiency: '+b[7]+'<br>'
+        +'Toxin Prod: '+b[8]+'<br>'
+        +'Public Good: '+b[9]+'<br>'
+        +'Biofilm: '+(b[10]?'Yes':'No')+'<br>'
+        +'Age: '+b[11]+'<br>'
+        +'Z-Depth: '+(b[12]||0)
+      );
+    }
+    traces.push({type:'scatter3d',mode:'markers',x:bx,y:by,z:bz,
+      text:bt,hoverinfo:'text',
+      marker:{size:bsz,color:bc,opacity:0.8,
+        line:{width:0.5,color:'rgba(255,255,255,0.15)'}},
+      name:'Bacteria'});
+  }
+
+  // === Helper: seedable pseudo-random for stable jitter across frames ===
+  function _cloudHash(a,b,c){ let h=((a*73856093)^(b*19349663)^(c*83492791))&0x7FFFFFFF; return (h%10000)/10000; }
+
+  // === Resource cloud (soft volumetric fog) ===
+  if(snapshot.resource_grid && document.getElementById('layResource').checked){
+    const g = snapshot.resource_grid;
+    const R=g.length, C=g[0].length;
+    const sx=[], sy=[], sz=[], sc=[], ssz=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
+    const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
+    let mx=0;
+    for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
+    mx=mx||1;
+    const PASSES=3; // overlapping soft blobs per cell
+    for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
+      const v=g[r][c]/mx;
+      if(v<0.06) continue;
+      for(let p=0;p<PASSES;p++){
+        const h1=_cloudHash(r,c,p), h2=_cloudHash(c,r,p+7), h3=_cloudHash(r+c,p,r);
+        const jx = (h1-0.5)*step*(gridW/C)*1.2;
+        const jy = (h2-0.5)*step*(gridH/R)*1.2;
+        const jz = (h3-0.3)*zMax3*0.4;
+        sx.push(c*(gridW/C)+jx); sy.push(r*(gridH/R)+jy); sz.push(jz);
+        const a = 0.04 + v*0.08;
+        sc.push('rgba('+(50+160*(1-v))+','+(140+70*v)+',50,'+a.toFixed(3)+')');
+        ssz.push(Math.max(10, 24*v));
+      }
+    }
+    if(sx.length) traces.push({type:'scatter3d',mode:'markers',x:sx,y:sy,z:sz,
+      marker:{size:ssz,color:sc,opacity:1,sizemode:'diameter'},
+      hoverinfo:'skip',showlegend:false,name:'Resource'});
+  }
+
+  // === Antibiotic cloud (red/coral fog) ===
+  if(snapshot.antibiotic_grid && document.getElementById('layAntibiotic').checked){
+    const g = snapshot.antibiotic_grid;
+    const R=g.length, C=g[0].length;
+    const ax=[],ay=[],az=[],ac=[],asz=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
+    const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
+    let mx=0;
+    for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
+    if(mx>0.01){
+      const PASSES=3;
+      for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
+        const v=g[r][c]/mx;
+        if(v<0.06) continue;
+        for(let p=0;p<PASSES;p++){
+          const h1=_cloudHash(r+1,c+2,p+10), h2=_cloudHash(c+3,r,p+13), h3=_cloudHash(r,p+5,c);
+          ax.push(c*(gridW/C)+(h1-0.5)*step*(gridW/C)*1.2);
+          ay.push(r*(gridH/R)+(h2-0.5)*step*(gridH/R)*1.2);
+          az.push((h3-0.2)*zMax3*0.6);
+          const a = 0.04 + v*0.1;
+          ac.push('rgba('+(190+50*v)+','+(60+30*v)+','+(50+25*v)+','+a.toFixed(3)+')');
+          asz.push(Math.max(10, 26*v));
+        }
+      }
+      if(ax.length) traces.push({type:'scatter3d',mode:'markers',x:ax,y:ay,z:az,
+        marker:{size:asz,color:ac,opacity:1,sizemode:'diameter'},
+        hoverinfo:'skip',showlegend:false,name:'Antibiotic'});
+    }
+  }
+
+  // === Biofilm cloud (cyan/blue matrix fog) ===
+  if(snapshot.biofilm_grid && document.getElementById('layBiofilm').checked){
+    const g = snapshot.biofilm_grid;
+    const R=g.length, C=g[0].length;
+    const fx=[],fy=[],fz=[],fc=[],fsz=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
+    const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
+    let mx=0;
+    for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
+    if(mx>0){
+      const PASSES=3;
+      for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
+        const v=g[r][c]/mx;
+        if(v<0.08) continue;
+        for(let p=0;p<PASSES;p++){
+          const h1=_cloudHash(r+5,c+1,p+20), h2=_cloudHash(c+6,r+2,p+23), h3=_cloudHash(r+c,p+9,c);
+          fx.push(c*(gridW/C)+(h1-0.5)*step*(gridW/C)*1.0);
+          fy.push(r*(gridH/R)+(h2-0.5)*step*(gridH/R)*1.0);
+          fz.push((h3-0.3)*zMax3*0.3); // biofilm stays near surface
+          const a = 0.05 + v*0.12;
+          fc.push('rgba('+(30+70*v)+','+(90+50*v)+','+(140+80*v)+','+a.toFixed(3)+')');
+          fsz.push(Math.max(12, 28*v));
+        }
+      }
+      if(fx.length) traces.push({type:'scatter3d',mode:'markers',x:fx,y:fy,z:fz,
+        marker:{size:fsz,color:fc,opacity:1,sizemode:'diameter'},
+        hoverinfo:'skip',showlegend:false,name:'Biofilm'});
+    }
+  }
+
+  // === Signal cloud (purple haze fog) ===
+  if(snapshot.signal_grid && document.getElementById('laySignal').checked){
+    const g = snapshot.signal_grid;
+    const R=g.length, C=g[0].length;
+    const gx=[],gy=[],gz=[],gc=[],gsz=[];
+    const step=Math.max(1,Math.floor(Math.min(R,C)/22));
+    const zMax3=parseInt(document.getElementById('cfgZLevels').value)||10;
+    let mx=0;
+    for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){ if(g[r][c]>mx) mx=g[r][c]; }
+    if(mx>0){
+      const PASSES=3;
+      for(let r=0;r<R;r+=step) for(let c=0;c<C;c+=step){
+        const v=g[r][c]/mx;
+        if(v<0.1) continue;
+        for(let p=0;p<PASSES;p++){
+          const h1=_cloudHash(r+8,c+4,p+30), h2=_cloudHash(c+9,r+3,p+33), h3=_cloudHash(r,p+15,c+7);
+          gx.push(c*(gridW/C)+(h1-0.5)*step*(gridW/C)*1.3);
+          gy.push(r*(gridH/R)+(h2-0.5)*step*(gridH/R)*1.3);
+          gz.push((h3-0.2)*zMax3*0.5);
+          const a = 0.03 + v*0.07;
+          gc.push('rgba('+(130+70*v)+','+(75+60*v)+','+(150+60*v)+','+a.toFixed(3)+')');
+          gsz.push(Math.max(8, 20*v));
+        }
+      }
+      if(gx.length) traces.push({type:'scatter3d',mode:'markers',x:gx,y:gy,z:gz,
+        marker:{size:gsz,color:gc,opacity:1,sizemode:'diameter'},
+        hoverinfo:'skip',showlegend:false,name:'Signal'});
+    }
+  }
+
+  if(!traces.length) return;
+
+  const zMax = parseInt(document.getElementById('cfgZLevels').value)||10;
+  const layout3d = {
+    paper_bgcolor:'#1a1a1a', plot_bgcolor:'#1a1a1a',
+    font:{color:'#cccccc',size:10},
+    margin:{t:0,r:0,b:0,l:0},
+    scene:{
+      xaxis:{title:'X',gridcolor:'#333',color:'#888',range:[0,gridW]},
+      yaxis:{title:'Y',gridcolor:'#333',color:'#888',range:[0,gridH]},
+      zaxis:{title:'Depth',gridcolor:'#333',color:'#888',range:[-1,zMax]},
+      bgcolor:'#1a1a1a',
+      camera: _camera3d || GIZMO_VIEWS.home
+    },
+    showlegend:false,
+    autosize:true,
+    hoverlabel:{bgcolor:'#252526',bordercolor:'#454545',font:{family:'Segoe UI',size:11,color:'#ccc'}}
+  };
+  const cfg3d = {responsive:true,displayModeBar:false};
+  Plotly.react('world3d',traces,layout3d,cfg3d);
+  // Hook camera relay only once
+  if(!world3dInit){
+    world3dInit = true;
+    _hookCameraRelay();
+  }
+}
+
 // ─── Modals ───
 function openModal(name){
   document.getElementById('modal-'+name).classList.add('open');
@@ -631,7 +948,8 @@ socket.on('snapshot', d => {
   buildOverlay(overlayBio, d.biofilm_grid, ovCyan);
   buildOverlay(overlaySig, d.signal_grid, ovPurple);
   updateStats(d);
-  render();
+  if(viewMode === '3d') render3D();
+  else render();
   if (document.getElementById('modal-charts').classList.contains('open')) updateCharts(d);
 });
 
@@ -639,15 +957,19 @@ let simState = 'idle'; // 'idle' | 'running' | 'paused'
 socket.on('status', d => {
   const badge = document.getElementById('statusBadge');
   const pp = document.getElementById('btnPlayPause'), bT = document.getElementById('btnStop');
+  const vmBtn = document.getElementById('btnViewMode');
   if (d.running && !d.paused) {
     simState='running'; badge.className='status s-run'; badge.textContent='running';
     pp.innerHTML='⏸'; pp.title='Pause'; bT.disabled=false;
+    vmBtn.disabled=true; vmBtn.style.opacity='.4'; vmBtn.title='Cannot change during simulation';
   } else if (d.running && d.paused) {
     simState='paused'; badge.className='status s-pause'; badge.textContent='paused';
     pp.innerHTML='▶'; pp.title='Resume'; bT.disabled=false;
+    vmBtn.disabled=true; vmBtn.style.opacity='.4'; vmBtn.title='Cannot change during simulation';
   } else {
     simState='idle'; badge.className='status s-idle'; badge.textContent='idle';
     pp.innerHTML='▶'; pp.title='Start'; bT.disabled=true;
+    vmBtn.disabled=false; vmBtn.style.opacity='1'; vmBtn.title='Switch between 2D and 3D view';
   }
 });
 
@@ -669,7 +991,34 @@ socket.on('config_defaults', cfg => {
   if(cfg.mutation) document.getElementById('cfgMutation').value = cfg.mutation.rate || 0.01;
   if(cfg.antibiotic) document.getElementById('cfgABStart').value = cfg.antibiotic.start_epoch || 60;
   if(cfg.simulation && cfg.simulation.seed != null) document.getElementById('cfgSeed').value = cfg.simulation.seed;
-  if(cfg.grid){ document.getElementById('cfgGridW').value = cfg.grid.width || 200; document.getElementById('cfgGridH').value = cfg.grid.height || 200; }
+  if(cfg.grid){ document.getElementById('cfgGridW').value = cfg.grid.width || 200; document.getElementById('cfgGridH').value = cfg.grid.height || 200; document.getElementById('cfgZLevels').value = cfg.grid.z_levels || 10; }
+  if(cfg.physics){
+    document.getElementById('cfgTemp').value = cfg.physics.temperature || 37;
+    document.getElementById('cfgPressure').value = cfg.physics.pressure_atm || 1;
+    document.getElementById('cfgPH').value = cfg.physics.ph || 7;
+  }
+  if(cfg.rl){
+    document.getElementById('cfgRLEnabled').checked = cfg.rl.enabled !== false;
+    document.getElementById('cfgForceCPU').checked = !!cfg.rl.force_cpu;
+  }
+});
+
+socket.on('gpu_info', info => {
+  const badge = document.getElementById('gpuBadge');
+  if(info && (info.cuda_available || info.mps_available)){
+    badge.style.display='inline';
+    badge.textContent = 'GPU: '+(info.gpu_name || info.device);
+    badge.title = 'Memory: '+(info.gpu_memory_mb ? info.gpu_memory_mb+'MB' : 'N/A')+' | Torch '+info.torch_version;
+  } else {
+    badge.style.display='inline';
+    badge.textContent = 'CPU';
+    badge.style.background='rgba(209,105,105,.2)';
+    badge.style.color='#d16969';
+    badge.title = 'No GPU detected — Torch '+info.torch_version+'\nFor GPU support, install torch with CUDA:\npip install torch --index-url https://download.pytorch.org/whl/cu121\nOr for ROCm: pip install torch --index-url https://download.pytorch.org/whl/rocm6.0';
+    // Disable GPU checkbox
+    document.getElementById('cfgForceCPU').checked = true;
+    document.getElementById('cfgForceCPU').disabled = true;
+  }
 });
 
 // ─── Controls ───
@@ -685,6 +1034,13 @@ function startSim(){
     seed: document.getElementById('cfgSeed').value || null,
     grid_width: document.getElementById('cfgGridW').value,
     grid_height: document.getElementById('cfgGridH').value,
+    z_levels: document.getElementById('cfgZLevels').value,
+    temperature: document.getElementById('cfgTemp').value,
+    pressure_atm: document.getElementById('cfgPressure').value,
+    ph: document.getElementById('cfgPH').value,
+    rl_enabled: document.getElementById('cfgRLEnabled').checked,
+    force_cpu: document.getElementById('cfgForceCPU').checked,
+    view_mode: viewMode,
     speed: parseFloat(document.getElementById('speedSlider').value) / 1000,
     update_interval: document.getElementById('intervalSlider').value,
   });

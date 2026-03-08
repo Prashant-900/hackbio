@@ -24,6 +24,16 @@ from agent import Phase
 from simulate import Simulation
 from visualize import generate_all_plots
 
+try:
+    from gpu_utils import gpu_info as _gpu_info
+    GPU_UTILS_OK = True
+except ImportError:
+    GPU_UTILS_OK = False
+    def _gpu_info():
+        return {"cuda_available": False, "mps_available": False,
+                "device": "cpu", "gpu_name": None,
+                "gpu_memory_mb": None, "torch_version": "N/A"}
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = "hackbio-abm-secret"
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
@@ -36,6 +46,7 @@ sim_running = False
 sim_paused = False
 update_interval = 3
 sim_speed = 0.05  # seconds delay between epochs (lower = faster)
+sim_view_mode = "2d"  # '2d' or '3d' — affects z-axis movement
 
 PHASE_INT = {Phase.LAG: 0, Phase.LOG: 1, Phase.STATIONARY: 2, Phase.DEATH: 3}
 
@@ -69,6 +80,7 @@ def _bacteria_list(agents: list) -> list[list]:
             round(a.genotype.public_good_production, 3),
             int(a.biofilm_member),
             a.age,
+            round(getattr(a, 'z', 0.0), 2),
         ])
     return out
 
@@ -160,6 +172,13 @@ def build_snapshot(sim: Simulation) -> dict:
         "ts_resource_consumed": ts_get("total_resource_consumed", 0),
         "running": sim_running,
         "paused": sim_paused,
+        # Physics
+        "temperature": getattr(sim.env, 'temperature', 37.0),
+        "pressure_atm": getattr(sim.env, 'pressure_atm', 1.0),
+        "ph": getattr(sim.env, 'ph', 7.0),
+        "growth_modifier": round(getattr(sim.env, 'growth_modifier', 1.0), 4),
+        # RL stats
+        "rl_stats": sim.dqn.stats() if getattr(sim, 'dqn', None) else None,
     }
 
 
@@ -167,8 +186,12 @@ def build_snapshot(sim: Simulation) -> dict:
 def simulation_worker(cfg: dict):
     global sim, sim_running, sim_paused
 
+    # Inject view mode into config so agents can check it during division
+    cfg['_view_mode'] = sim_view_mode
+
     with sim_lock:
         sim = Simulation(cfg)
+        sim.view_mode = sim_view_mode
         sim_running = True
         sim_paused = False
 
@@ -254,6 +277,7 @@ def on_connect():
     emit("status", {"running": sim_running, "paused": sim_paused,
                     "epoch": sim.epoch if sim else 0})
     emit("config_defaults", load_config())
+    emit("gpu_info", _gpu_info())
 
 
 @socketio.on("start")
@@ -276,6 +300,7 @@ def on_start(data=None):
             "mutation_rate": ("mutation", "rate", float),
             "grid_width": ("grid", "width", int),
             "grid_height": ("grid", "height", int),
+            "z_levels": ("grid", "z_levels", int),
         }
         for key, (sec, param, typ) in mapping.items():
             if key in data and data[key] not in (None, ""):
@@ -287,6 +312,21 @@ def on_start(data=None):
         if "seed" in data:
             val = data["seed"]
             cfg["simulation"]["seed"] = int(val) if val not in (None, "", "null") else None
+        # Physics settings from UI
+        if "temperature" in data and data["temperature"] not in (None, ""):
+            cfg.setdefault("physics", {})["temperature"] = float(data["temperature"])
+        if "pressure_atm" in data and data["pressure_atm"] not in (None, ""):
+            cfg.setdefault("physics", {})["pressure_atm"] = float(data["pressure_atm"])
+        if "ph" in data and data["ph"] not in (None, ""):
+            cfg.setdefault("physics", {})["ph"] = float(data["ph"])
+        # RL toggle
+        if "rl_enabled" in data:
+            cfg.setdefault("rl", {})["enabled"] = bool(data["rl_enabled"])
+        if "force_cpu" in data:
+            cfg.setdefault("rl", {})["force_cpu"] = bool(data["force_cpu"])
+        if "view_mode" in data:
+            global sim_view_mode
+            sim_view_mode = str(data["view_mode"])
 
     sim_thread = threading.Thread(target=simulation_worker, args=(cfg,), daemon=True)
     sim_thread.start()
@@ -325,6 +365,17 @@ def on_set_interval(data):
     global update_interval
     update_interval = max(1, int(data.get("value", 3)))
     emit("log", {"msg": f"Update interval: every {update_interval} epochs."})
+
+
+@socketio.on("set_view_mode")
+def on_set_view_mode(data):
+    """Toggle 2D/3D mode — affects bacterial z-axis movement."""
+    global sim_view_mode
+    mode = data.get("mode", "2d")
+    sim_view_mode = mode
+    if sim is not None:
+        sim.view_mode = mode
+    emit("log", {"msg": f"View mode: {mode.upper()} — {'3-axis' if mode=='3d' else '2-axis'} movement"})
 
 
 @socketio.on("request_snapshot")
